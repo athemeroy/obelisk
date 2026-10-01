@@ -1137,6 +1137,9 @@ async function run() {
     function frame(now) {
       gaps.push(now - previous);
       previous = now;
+      // Model a continuing physical gesture with wheel packets, rather than
+      // relying on a single packet's 450ms watchdog surviving CI frame gaps.
+      if (now - startedAt < 1200) wrap.dispatchEvent(new WheelEvent('wheel', { deltaY: -70, bubbles: true }));
       if (now - startedAt >= 400) wrap.scrollTop -= 70;
       sampleGeometry(now);
       if (now - startedAt < 1200) requestAnimationFrame(frame);

@@ -972,6 +972,8 @@ async function run() {
   );
   await delay(250);
 
+  // Stress asynchronous row measurement without changing any frame budget.
+  await win.webContents.debugger.sendCommand('Emulation.setCPUThrottlingRate', { rate: 2 });
   const downwardGeometry = await probeOrdinaryScrollGeometry(win, {
     startIndex: 40,
     direction: 1,
@@ -997,6 +999,30 @@ async function run() {
       `ordinary ${label} scrolling keeps visible messages fixed to scroll input (${JSON.stringify(geometry.residualExample)})`,
     );
   }
+  await win.webContents.debugger.sendCommand('Emulation.setCPUThrottlingRate', { rate: 1 });
+  const originalContentSize = win.getContentSize();
+  win.setContentSize(1024, 656);
+  await delay(250);
+  for (const [label, startIndex, direction] of [
+    ['downward', 40, 1],
+    ['upward', 260, -1],
+  ]) {
+    const geometry = await probeOrdinaryScrollGeometry(win, { startIndex, direction });
+    assert(
+      geometry.maxVisibleOverlaps === 0,
+      `small-window ${label} scrolling never overlaps long rows (${JSON.stringify(geometry.overlapExample)})`,
+    );
+    assert(
+      geometry.programmaticScrolls === 0,
+      `small-window ${label} scrolling performs no programmatic scrollTo writes`,
+    );
+    assert(
+      Math.abs(geometry.maxResidualMotion) < 1.5,
+      `small-window ${label} scrolling keeps visible messages fixed to scroll input (${JSON.stringify(geometry.residualExample)})`,
+    );
+  }
+  win.setContentSize(...originalContentSize);
+  await delay(250);
   await win.webContents.executeJavaScript(
     `window.location.hash = '#/sessions/${sessionId}?focus=${focusMessageUuid}'`,
     true,

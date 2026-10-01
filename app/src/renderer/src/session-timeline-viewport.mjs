@@ -1,7 +1,7 @@
 // Copyright (C) 2026 tommy0103 and contributors.
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { computed, nextTick, onScopeDispose, ref } from 'vue';
+import { computed, nextTick, onScopeDispose, ref, triggerRef } from 'vue';
 import {
   defaultRangeExtractor,
   elementScroll,
@@ -112,6 +112,7 @@ export function useSessionTimelineViewport({
     onSuppressedAdjustment: applySuppressedAdjustment,
   });
   let virtualizer = null;
+  let rangeRefreshPending = false;
   const rangeExtractor = createViewportRangeExtractor({
     getScrollElement: () => scrollElement.value,
     getVirtualizer: () => virtualizer?.value,
@@ -139,12 +140,20 @@ export function useSessionTimelineViewport({
     measureElement: measureVirtualElement,
     scrollToFn: scrollPolicy.scrollToFn,
     onChange: instance => {
-      // virtual-core caches extracted indexes by the visible row range. Our
-      // pixel buffer also depends on measurements outside that range and the
-      // compositor's offset, so invalidate it when geometry is published.
-      instance.setOptions({
-        ...instance.options,
-        rangeExtractor: range => rangeExtractor(range),
+      if (rangeRefreshPending) return;
+      rangeRefreshPending = true;
+      // The pixel buffer depends on measurements outside the visible range,
+      // which virtual-core's index memo does not track. Refresh after Vue has
+      // published the measurement batch, rather than re-entering geometry
+      // derivation in the middle of a row's ref/resize callback.
+      nextTick(() => {
+        rangeRefreshPending = false;
+        if (!scrollElement.value || virtualizer?.value !== instance) return;
+        instance.setOptions({
+          ...instance.options,
+          rangeExtractor: range => rangeExtractor(range),
+        });
+        triggerRef(virtualizer);
       });
     },
   })));
@@ -263,7 +272,17 @@ export function useSessionTimelineViewport({
 
   function measureElement(element) {
     if (!element) return;
-    virtualizer.value.measureElement(element);
+    const instance = virtualizer.value;
+    const index = instance.indexFromElement(element);
+    const key = instance.options.getItemKey(index);
+    const isNewElement = instance.elementsCache.get(key) !== element;
+    instance.measureElement(element);
+    // virtual-core defers new row measurement while scrolling. A long row can
+    // already extend into the viewport before its ResizeObserver callback, so
+    // publish its actual height during mount before subsequent rows can paint.
+    if (isNewElement && instance.isScrolling) {
+      instance.resizeItem(index, Math.round(element.getBoundingClientRect().height));
+    }
   }
 
   async function settleAfterUserScroll(commit = () => Promise.resolve()) {

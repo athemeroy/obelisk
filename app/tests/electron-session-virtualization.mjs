@@ -304,7 +304,15 @@ async function traceWheelPaintContinuity(win, { updateTool = false } = {}) {
   const runId = wheelTraceRun++;
   const startMark = `obelisk-wheel-${runId}-start`;
   const endMark = `obelisk-wheel-${runId}-end`;
-  win.showInactive();
+  // Compositor frame cadence is a foreground-window contract. Merely showing
+  // an inactive window does not establish the native activation prerequisite.
+  win.show();
+  app.focus({ steal: true });
+  win.focus();
+  for (let attempt = 0; attempt < 40 && !win.isFocused(); attempt++) await delay(20);
+  if (!win.isVisible() || !win.isFocused()) {
+    throw new Error('Wheel paint probe requires a visible, focused native window');
+  }
   await delay(180);
   await win.webContents.executeJavaScript(`(() => {
     const tool = document.querySelector('[data-view-key="tool:call-1"]');

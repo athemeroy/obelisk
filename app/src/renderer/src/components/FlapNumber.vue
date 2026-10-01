@@ -64,7 +64,7 @@ onUnmounted(() => {
   <span class="flap-number" :aria-label="String(value)">
     <span
       v-for="(slot, index) in slots"
-      :key="`${state.version}:${index}`"
+      :key="slot.changed ? `${state.version}:${index}` : `stable:${index}`"
       class="flap-slot"
       :class="{ flipping: state.animating && slot.changed }"
       aria-hidden="true"

@@ -1090,6 +1090,9 @@ async function run() {
   const stationaryWindowBefore = await win.webContents.executeJavaScript(
     `[...document.querySelectorAll('.virtual-timeline-row')].map(row => row.dataset.index)`, true,
   );
+  await win.webContents.executeJavaScript(`(() => {
+    window.__stationaryCounterPrefix = [...document.querySelectorAll('.flap-number .flap-slot')].slice(0, -1);
+  })()`, true);
   const stationaryTraces = [];
   for (let runIndex = 0; runIndex < stationaryAppendRuns; runIndex++) {
     stationaryTraces.push(await traceStationaryAppend(
@@ -1107,6 +1110,14 @@ async function run() {
     JSON.stringify(stationaryWindowBefore) === JSON.stringify(stationaryWindowAfter),
     `tail appends preserve the settled reader window (${stationaryWindowBefore.length} -> ${stationaryWindowAfter.length} mounted rows)`,
   );
+  const counterPrefixRetained = await win.webContents.executeJavaScript(`(() => {
+    const previous = window.__stationaryCounterPrefix;
+    delete window.__stationaryCounterPrefix;
+    const current = [...document.querySelectorAll('.flap-number .flap-slot')].slice(0, -1);
+    return previous.length > 0 && current.length === previous.length
+      && current.every((element, index) => element === previous[index]);
+  })()`, true);
+  assert(counterPrefixRetained, 'tail appends retain unchanged counter digits instead of rebuilding their paint layers');
   const liveHeaderMetadata = await win.webContents.executeJavaScript(`(() => ({
     text: document.querySelector('.session-meta-inline')?.textContent || '',
   }))()`, true);

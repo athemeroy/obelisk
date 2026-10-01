@@ -62,3 +62,52 @@ jobs:
       - name: Verify POSIX bootstrap installer
         if: runner.os != 'Windows'
         run: node --test tests/cli-bootstrap-install.test.mjs
+
+  desktop:
+    name: Electron desktop regressions
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+            output: mac-arm64
+          - arch: x64
+            runner: macos-15-intel
+            output: mac
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            app/package-lock.json
+      - run: npm ci
+      - run: npm --prefix app ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - name: Rebuild native modules for Electron
+        working-directory: app
+        run: npx --no-install electron-builder install-app-deps
+      - run: npm --prefix app run test:electron:all
+
+      - name: Package native updater and run two-version acceptance
+        env:
+          MAC_ARCH: ${{ matrix.arch }}
+          MAC_OUTPUT: ${{ matrix.output }}
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d "$RUNNER_TEMP/obelisk-sparkle-tools.XXXXXX")
+          trap 'rm -rf "$work"' EXIT
+          curl --fail --location --silent --show-error \
+            https://github.com/sparkle-project/Sparkle/releases/download/2.9.4/Sparkle-2.9.4.tar.xz \
+            -o "$work/sparkle.tar.xz"
+          printf '%s  %s\n' ce89daf967db1e1893ed3ebd67575ed82d3902563e3191ca92aaec9164fbdef9 "$work/sparkle.tar.xz" | shasum -a 256 -c -
+          tar -xJf "$work/sparkle.tar.xz" -C "$work"
+          npm --prefix app run pack -- --mac --"$MAC_ARCH" -c.mac.identity=null --publish never
+          node app/tests/packaged-updates.mjs sparkle "$MAC_ARCH" "app/release/$MAC_OUTPUT/Obelisk.app" "$work/bin/sign_update"
+          node app/tests/packaged-updates.mjs fallback "$MAC_ARCH" "app/release/$MAC_OUTPUT/Obelisk.app" "$work/bin/sign_update"

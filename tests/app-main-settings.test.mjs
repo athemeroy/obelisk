@@ -87,7 +87,7 @@ async function importMain() {
 // 'dialog', 'nativeImage', 'shell') must be present, even if unused by a test.
 function electronNamespace({ app, BrowserWindow, ipcMain }) {
   return {
-    app: app ?? { whenReady: () => Promise.resolve(), on() {}, quit() {} },
+    app: { isPackaged: false, getVersion: () => '0.2.3', ...(app ?? { whenReady: () => Promise.resolve(), on() {}, quit() {} }) },
     BrowserWindow,
     ipcMain: ipcMain ?? { handle() {} },
     clipboard: {},

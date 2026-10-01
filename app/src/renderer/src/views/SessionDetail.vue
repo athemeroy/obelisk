@@ -371,6 +371,9 @@ async function commitSessionSnapshot(latest) {
   await nextTick();
   timelineViewport.completeInitialSnapshot();
   if (restoreTail) await timelineViewport.scrollToEnd();
+  // DOM updates and their forced layout should not share the IPC reply task.
+  // Read geometry in the next rendering frame, after Vue has published rows.
+  await new Promise(resolve => requestAnimationFrame(resolve));
   syncTimelineScrollMargin();
   if (timelineReady.value) {
     if (!pendingFocusUuid.value) onScroll();

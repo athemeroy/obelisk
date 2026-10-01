@@ -672,7 +672,10 @@ async function run() {
     await delay(10);
   }
   const coldOpenPatchReads = ipcReads.patches;
-  await delay(250);
+  await waitFor(win.webContents, `(() => {
+    const timeline = document.querySelector('.virtual-timeline');
+    return timeline && getComputedStyle(timeline).visibility === 'visible' && !document.querySelector('.first-open-loading');
+  })()`, 'cold-open layout recovery');
   const coldOpenVisibility = await win.webContents.executeJavaScript(`(() => {
     const header = document.querySelector('.session-header');
     const timeline = document.querySelector('.virtual-timeline');
@@ -1074,6 +1077,16 @@ async function run() {
     let programmaticScrolls = 0;
     let postScrollEndWrites = 0;
     let phase = 'scrolling';
+    // Capture the short animation inside the renderer instead of racing it
+    // with a later IPC poll on a loaded CI host.
+    window.__postScrollFlapObserved = false;
+    const flapObserver = new MutationObserver(() => {
+      if (phase === 'settled' && document.querySelector('.flap-slot.flipping')) {
+        window.__postScrollFlapObserved = true;
+        flapObserver.disconnect();
+      }
+    });
+    flapObserver.observe(document.querySelector('.flap-number'), { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
     const blockAutomaticScrollEnd = event => event.stopImmediatePropagation();
     wrap.addEventListener('scrollend', blockAutomaticScrollEnd, true);
     wrap.scrollTo = (...args) => {
@@ -1164,7 +1177,7 @@ async function run() {
   );
   await waitFor(
     win.webContents,
-    `document.querySelector('.flap-slot.flipping')`,
+    `window.__postScrollFlapObserved === true`,
     'post-scrollend flap animation',
   );
   await waitFor(

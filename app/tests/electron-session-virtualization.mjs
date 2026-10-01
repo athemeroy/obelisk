@@ -540,6 +540,11 @@ function registerHandlers() {
   ipcMain.handle('db:getSessionSubagents', () => { ipcReads.subagents++; return []; });
   ipcMain.handle('db:getSessionWorkflows', () => { ipcReads.workflows++; return []; });
   ipcMain.handle('db:getSessionSummaries', (event, id) => {
+    if (id === 'scroll-gesture-probe') {
+      // Start the live append only after the renderer has begun its gesture.
+      setTimeout(() => appendMessage({ webContents: event.sender }, scrollingAppendIndex), 250);
+      return [];
+    }
     if (id === 'cold-open-layout-probe') {
       event.sender.send('obelisk:session-updated', { sessionId });
       return [];
@@ -599,6 +604,8 @@ async function run() {
       preload: join(appRoot, 'out', 'preload', 'index.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      // This hidden fixture exercises foreground animation/frame behavior.
+      backgroundThrottling: false,
     },
   });
 
@@ -1069,7 +1076,6 @@ async function run() {
     requestAnimationFrame(sample);
   })()`, true);
   currentSessionTitle = 'Live metadata title';
-  setTimeout(() => appendMessage(win, scrollingAppendIndex), 250);
   const scrollProbe = await win.webContents.executeJavaScript(`new Promise(resolve => {
     const wrap = document.querySelector('.detail-wrap');
     const totalBeforeGesture = Number(document.querySelector('.flap-number')?.getAttribute('aria-label'));
@@ -1101,6 +1107,7 @@ async function run() {
     let maxResidualMotion = 0;
     let residualExample = null;
     wrap.dispatchEvent(new WheelEvent('wheel', { deltaY: -70, bubbles: true }));
+    void window.obelisk.getSessionSummaries('scroll-gesture-probe');
     function sampleGeometry(now) {
       const wrapRect = wrap.getBoundingClientRect();
       const scrollTop = wrap.scrollTop;
@@ -1170,6 +1177,8 @@ async function run() {
     }
     requestAnimationFrame(frame);
   })`, true);
+  assert(scrollProbe.totalBeforeGesture === messageCount + stationaryAppendRuns, 'the live append starts after the renderer gesture begins');
+  console.log(`SCROLL GESTURE: ${JSON.stringify(scrollProbe)}`);
   await waitFor(
     win.webContents,
     `document.querySelector('.flap-number')?.getAttribute('aria-label') === '${messageCount + stationaryAppendRuns + 1}'`,

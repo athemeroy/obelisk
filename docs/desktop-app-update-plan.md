@@ -109,7 +109,9 @@ after feed assembly requires regenerating the feed assets in the draft.
 
 To validate signing without making a version tag or GitHub Release, dispatch
 Release macOS App on the feature branch with `verify_only: true` and no tag.
-It signs/notarizes both architectures and validates both feed formats, while
+Signing builds and repository/UI checks run independently; the Release upload
+job requires both plus validated feeds. Verification-only mode
+signs/notarizes both architectures and validates both feed formats, while
 skipping the release job. Normal dispatch selects an existing app version tag as its workflow ref,
 for example `gh workflow run release-app.yml --ref v0.2.4`. Every job checks out
 the run’s immutable SHA; the optional tag input only checks consistency.

@@ -129,7 +129,7 @@ jobs:
       - run: npm --prefix app run test:electron:all
 
   build:
-    needs: [prepare, verify]
+    needs: prepare
     name: Sign and notarize (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -311,7 +311,7 @@ jobs:
 
   release:
     if: ${{ !inputs.verify_only }}
-    needs: [prepare, build, validate-feeds]
+    needs: [prepare, verify, build, validate-feeds]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

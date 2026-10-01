@@ -1112,6 +1112,10 @@ async function run() {
     }
     requestAnimationFrame(sample);
   })()`, true);
+  // Slow only the gesture/settlement path: stale navigation and deferred row
+  // measurement must preserve the reader even when renderer callbacks lag.
+  // Stationary commit performance is still measured at normal CPU speed.
+  await win.webContents.debugger.sendCommand('Emulation.setCPUThrottlingRate', { rate: 12 });
   currentSessionTitle = 'Live metadata title';
   const scrollProbe = await win.webContents.executeJavaScript(`new Promise(resolve => {
     const wrap = document.querySelector('.detail-wrap');
@@ -1300,6 +1304,8 @@ async function run() {
     `live append preserves reader anchor ${scrollProbe.anchor?.uuid} (${scrollProbe.anchor?.offset}px -> ${readerState.anchor?.offset}px)`,
   );
   assert(scrollProbe.maxFrameGap < 250, `live scroll has no catastrophic long frame (${scrollProbe.maxFrameGap.toFixed(1)}ms)`);
+
+  await win.webContents.debugger.sendCommand('Emulation.setCPUThrottlingRate', { rate: 1 });
 
   await waitFor(win.webContents, `!document.querySelector('.flap-slot.flipping')`, 'tail append flap settlement');
   const updatedReaderText = `Updated ${scrollProbe.anchor.uuid} ${'content identity '.repeat(20)}`;

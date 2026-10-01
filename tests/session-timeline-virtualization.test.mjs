@@ -86,6 +86,26 @@ test('timeline viewport buffers by rendered pixels instead of a fixed row count'
   assert.equal(indexes.length, 127);
 });
 
+test('timeline buffer covers the compensated reader position before scrollTop is reconciled', () => {
+  const rangeExtractor = createViewportRangeExtractor({
+    getScrollElement: () => ({ clientHeight: 700, scrollTop: 5000 }),
+    getScrollOffset: () => 4400,
+    getVirtualizer: () => ({
+      getVirtualItemForOffset: offset => ({ index: Math.floor(offset / 50) }),
+    }),
+  });
+
+  const indexes = rangeExtractor({
+    startIndex: 88,
+    endIndex: 101,
+    overscan: 6,
+    count: 1000,
+  });
+
+  assert.equal(indexes[0], 32);
+  assert.equal(indexes.at(-1), 158);
+});
+
 test('timeline count and disclosure classes come from renderer state rather than DOM state', () => {
   assert.match(sessionDetail, /const totalMsgs = computed\(\(\) => timelineItems\.value\.length\)/);
   assert.match(timelineRow, /disclosures\.isOpen/);

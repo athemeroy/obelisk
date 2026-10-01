@@ -46,6 +46,7 @@ export function estimateTimelineItemSize(item) {
 export function createViewportRangeExtractor({
   getScrollElement,
   getVirtualizer,
+  getScrollOffset,
   bufferViewports = 4,
 }) {
   return range => {
@@ -58,7 +59,7 @@ export function createViewportRangeExtractor({
     // the scroll event. Buffer in pixels so short rows do not collapse a
     // count-based overscan into less than one trackpad gesture.
     const bufferSize = viewportSize * bufferViewports;
-    const scrollOffset = element.scrollTop || 0;
+    const scrollOffset = getScrollOffset?.() ?? (element.scrollTop || 0);
     const first = instance.getVirtualItemForOffset(Math.max(0, scrollOffset - bufferSize));
     const last = instance.getVirtualItemForOffset(
       scrollOffset + viewportSize + bufferSize,
@@ -114,6 +115,10 @@ export function useSessionTimelineViewport({
   const rangeExtractor = createViewportRangeExtractor({
     getScrollElement: () => scrollElement.value,
     getVirtualizer: () => virtualizer?.value,
+    // Suppressed size corrections move the timeline with translate instead of
+    // scrollTop. Measure the window we will reveal when that compensation is
+    // committed, so the final scroll does not mount another unmeasured prefix.
+    getScrollOffset: () => (scrollElement.value?.scrollTop || 0) + suppressedAdjustment,
   });
   virtualizer = useVirtualizer(computed(() => ({
     count: items.value.length,
@@ -285,6 +290,10 @@ export function useSessionTimelineViewport({
         : null;
     settlementActive = true;
     try {
+      // Replace any pending scrollToIndex reconciliation with the reader's
+      // current offset. The policy suppresses the physical write here; using
+      // the public API also lets virtual-core retire the old navigation target.
+      instance.scrollToOffset(scrollOffset, { behavior: 'auto' });
       // Publish the coalesced live patch inside the same geometry transaction.
       // Real row sizes remain live throughout; only scrollTop corrections are
       // suppressed until the reader anchor can be reconciled once.

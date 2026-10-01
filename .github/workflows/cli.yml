@@ -97,9 +97,13 @@ jobs:
       - name: Rebuild native modules for Electron
         working-directory: app
         run: npx --no-install electron-builder install-app-deps
-      - run: npm --prefix app run test:electron:all
+      - id: electron-regressions
+        run: npm --prefix app run test:electron:all
 
       - name: Package native updater and run two-version acceptance
+        # Keep acceptance evidence when an unrelated renderer regression fails.
+        # The failed regression still fails the job and blocks publication.
+        if: ${{ !cancelled() && (success() || steps.electron-regressions.outcome == 'failure') }}
         env:
           MAC_ARCH: ${{ matrix.arch }}
           MAC_OUTPUT: ${{ matrix.output }}

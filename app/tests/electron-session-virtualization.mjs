@@ -38,6 +38,8 @@ const channels = [
 let failures = 0;
 let firstSessionListRead = true;
 let nextPatchDelayMs = 0;
+let scrollingContentUuid = null;
+let scrollingContentText = null;
 let stressGlobalCatalogue = false;
 let currentSessionTitle = 'Virtualized timeline integration';
 const ipcReads = {
@@ -482,6 +484,29 @@ function rendererTaskMetrics(traceEvents, startMark, endMark) {
   };
 }
 
+// A stationary commit must start after navigation, focus highlighting and
+// virtual-row measurement have settled, rather than a fixed host-side delay.
+async function waitForStationaryLayout(win) {
+  await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+    const deadline = setTimeout(() => reject(new Error('Timeline did not settle before stationary trace')), 8000);
+    let previous = null;
+    let stableSince = performance.now();
+    function sample(now) {
+      const wrap = document.querySelector('.detail-wrap');
+      const geometry = JSON.stringify([wrap?.scrollTop, wrap?.scrollHeight,
+        ...[...document.querySelectorAll('.virtual-timeline-row')].map(row => {
+          const rect = row.getBoundingClientRect();
+          return [row.dataset.index, rect.top, rect.height];
+        })]);
+      if (geometry !== previous || document.querySelector('.is-focused, .flap-slot.flipping')) stableSince = now;
+      previous = geometry;
+      if (now - stableSince >= 500) { clearTimeout(deadline); resolve(true); }
+      else requestAnimationFrame(sample);
+    }
+    requestAnimationFrame(sample);
+  })`, true);
+}
+
 async function traceStationaryAppend(win, index, expectedTotal, runIndex) {
   const startMark = `obelisk-live-commit-${runIndex}-start`;
   const endMark = `obelisk-live-commit-${runIndex}-end`;
@@ -541,6 +566,10 @@ function registerHandlers() {
   ipcMain.handle('db:getSessionSubagents', () => { ipcReads.subagents++; return []; });
   ipcMain.handle('db:getSessionWorkflows', () => { ipcReads.workflows++; return []; });
   ipcMain.handle('db:getSessionSummaries', (event, id) => {
+    if (id === 'content-gesture-probe') {
+      setTimeout(() => replaceMessageText({ webContents: event.sender }, scrollingContentUuid, scrollingContentText), 200);
+      return [];
+    }
     if (id === 'scroll-gesture-probe') {
       // Start the live append only after the renderer has begun its gesture.
       setTimeout(() => appendMessage({ webContents: event.sender }, scrollingAppendIndex), 250);
@@ -1006,6 +1035,7 @@ async function run() {
       },
     };
   })()`, true);
+  await waitForStationaryLayout(win);
   const stationaryAnchorBefore = await win.webContents.executeJavaScript(`(() => {
     const wrap = document.querySelector('.detail-wrap');
     const wrapRect = wrap.getBoundingClientRect();
@@ -1293,7 +1323,8 @@ async function run() {
       restore: () => { window.marked.parse = original; },
     };
   })()`, true);
-  setTimeout(() => replaceMessageText(win, scrollProbe.anchor.uuid, updatedReaderText), 200);
+  scrollingContentUuid = scrollProbe.anchor.uuid;
+  scrollingContentText = updatedReaderText;
   const existingUpdateProbe = await win.webContents.executeJavaScript(`new Promise(resolve => {
     const wrap = document.querySelector('.detail-wrap');
     const targetUuid = ${JSON.stringify(scrollProbe.anchor.uuid)};
@@ -1311,8 +1342,10 @@ async function run() {
       return originalScrollTo(...args);
     };
     wrap.dispatchEvent(new WheelEvent('wheel', { deltaY: -40, bubbles: true }));
+    void window.obelisk.getSessionSummaries('content-gesture-probe');
     const startedAt = performance.now();
     function frame(now) {
+      if (now - startedAt < 700) wrap.dispatchEvent(new WheelEvent('wheel', { deltaY: -40, bubbles: true }));
       if (now - startedAt >= 250 && steps < 3) {
         wrap.scrollTop -= 40;
         steps++;
@@ -1375,6 +1408,7 @@ async function run() {
     `document.querySelector('[data-uuid=${JSON.stringify(scrollProbe.anchor.uuid)}]')?.textContent.includes(${JSON.stringify(updatedReaderText.slice(0, 40))})`,
     'visible message content update',
   );
+  await waitForStationaryLayout(win);
   const updatedReaderState = await win.webContents.executeJavaScript(`(() => {
     const wrap = document.querySelector('.detail-wrap');
     const anchorElement = document.querySelector(

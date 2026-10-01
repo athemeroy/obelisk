@@ -250,7 +250,8 @@ async function startRendererTrace(win, { captureScreenshots = false } = {}) {
     if (method === 'Tracing.dataCollected') traceEvents.push(...(params.value || []));
     if (method === 'Tracing.tracingComplete') completeTrace();
   };
-  win.webContents.debugger.attach('1.3');
+  const ownsDebugger = !win.webContents.debugger.isAttached();
+  if (ownsDebugger) win.webContents.debugger.attach('1.3');
   win.webContents.debugger.on('message', onMessage);
   await win.webContents.debugger.sendCommand('Tracing.start', {
     categories: [
@@ -267,7 +268,7 @@ async function startRendererTrace(win, { captureScreenshots = false } = {}) {
     await win.webContents.debugger.sendCommand('Tracing.end');
     await traceComplete;
     win.webContents.debugger.removeListener('message', onMessage);
-    win.webContents.debugger.detach();
+    if (ownsDebugger) win.webContents.debugger.detach();
     return traceEvents;
   };
 }
@@ -617,6 +618,11 @@ async function run() {
     `document.body.textContent.includes('Virtualized timeline integration')`,
     'the session list before cold open',
   );
+  // This suite asserts the full-motion flap transition; do not inherit a CI
+  // host's accessibility setting. Keep the emulation session through traces.
+  win.webContents.debugger.attach('1.3');
+  await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
+  assert(!await win.webContents.executeJavaScript(`matchMedia('(prefers-reduced-motion: reduce)').matches`), 'the animation fixture runs with explicit full-motion preference');
   await win.webContents.executeJavaScript(`(() => {
     const probe = {
       maxOverlaps: 0,

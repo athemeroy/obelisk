@@ -149,6 +149,7 @@ async function waitFor(webContents, expression, message, timeoutMs = 8000) {
     if (await webContents.executeJavaScript(`Boolean(${expression})`, true)) return;
     await delay(40);
   }
+  console.error('TIMELINE TIMEOUT', message, JSON.stringify({ ipcReads, scrollingContentUuid, storedText: messages.find(row => row.uuid === scrollingContentUuid)?.text, renderer: await webContents.executeJavaScript(`({ scrollTop: document.querySelector('.detail-wrap')?.scrollTop, rows: [...document.querySelectorAll('.virtual-timeline-row [data-uuid]')].map(row => ({ uuid: row.dataset.uuid, text: row.textContent.slice(0, 80) })) })`) }));
   throw new Error(`Timed out waiting for ${message}`);
 }
 
@@ -465,7 +466,7 @@ function rendererTaskMetrics(traceEvents, startMark, endMark) {
       ))
       .sort((a, b) => (b.dur || 0) - (a.dur || 0))
       .slice(0, 8)
-      .map(event => ({ name: event.name, durationMs: (event.dur || 0) / 1000 }))
+      .map(event => ({ name: event.name, durationMs: (event.dur || 0) / 1000, args: event.args }))
     : [];
   return {
     tasks: taskDurations.length,

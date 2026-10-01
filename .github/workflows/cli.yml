@@ -100,6 +100,30 @@ jobs:
       - id: electron-regressions
         run: npm --prefix app run test:electron:all
 
+      - name: Compare baseline timeline after a regression failure
+        if: ${{ !cancelled() && steps.electron-regressions.outcome == 'failure' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$BASE_SHA" ]]; then exit 0; fi
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          work=$(mktemp -d "$RUNNER_TEMP/obelisk-baseline.XXXXXX")
+          trap 'rm -rf "$work"' EXIT
+          git archive "$BASE_SHA" | tar -x -C "$work"
+          ln -s "$GITHUB_WORKSPACE/node_modules" "$work/node_modules"
+          ln -s "$GITHUB_WORKSPACE/app/node_modules" "$work/app/node_modules"
+          cp -R packages/core/dist "$work/packages/core/dist"
+          cp app/tests/electron-session-virtualization.mjs "$work/app/tests/electron-session-virtualization.mjs"
+          cd "$work/app"
+          npx --no-install electron-vite build
+          echo "Baseline product: $BASE_SHA; current fixture and identical Electron runtime"
+          if npx --no-install electron --no-sandbox tests/electron-session-virtualization.mjs; then
+            echo 'Baseline timeline passed; investigate the feature regression.'
+          else
+            echo 'Baseline timeline failed too; retain the failed feature gate and compare diagnostics.'
+          fi
+
       - name: Package native updater and run two-version acceptance
         # Keep acceptance evidence when an unrelated renderer regression fails.
         # The failed regression still fails the job and blocks publication.

@@ -10,6 +10,8 @@ dist/
 app/out/
 HANDOFF.md
 .obelisk/
-app/build/
+app/build/*
+!app/build/icon.icns
+!app/build/icon.svg
 app/scripts/
 app/*.html

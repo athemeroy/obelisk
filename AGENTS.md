@@ -14,6 +14,7 @@ tools; it does not require a particular workflow skill.
 Read [CONTRIBUTING.md](CONTRIBUTING.md), starting with its
 [intake policy](CONTRIBUTING.md#before-you-open-a-pull-request),
 [cross-cutting requirements](CONTRIBUTING.md#six-things-that-decide-whether-a-pr-lands),
+[runtime requirements](CONTRIBUTING.md#node-and-electron-runtimes),
 [verification contract](CONTRIBUTING.md#verification-contract), and
 [scope and review guidance](CONTRIBUTING.md#scope-and-review).
 Then read the area-specific sections relevant to the task using the index below.

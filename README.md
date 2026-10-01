@@ -171,10 +171,44 @@ Prebuilt releases are currently available for macOS from
 [Releases](https://github.com/tommy0103/obelisk/releases). The source app can be
 run locally on macOS, Windows, and Linux.
 
+### Release the macOS app
+
+The **Release macOS App** workflow builds signed and notarized DMG/ZIP packages
+for Apple Silicon (`arm64`) and Intel (`x64`). It runs the repository checks and
+all five Electron suites, then verifies signatures, notarization tickets and
+packaged native modules in the apps extracted from both distribution formats.
+All four packages are uploaded to a GitHub Release draft once both builds pass.
+
+The build host uses Node 22; the app runs on Electron 43's embedded Node 24.
+Artifact verification reports the embedded Electron, Node and ABI versions.
+See [the runtime explanation](docs/adr/0005-app-electron-vite-ts-esm.md) and
+[development verification guidance](CONTRIBUTING.md#node-and-electron-runtimes).
+
+Configure these repository Actions secrets:
+
+| Secret | Value |
+| --- | --- |
+| `MAC_CSC_LINK` | Base64-encoded Developer ID Application `.p12`, including its private key |
+| `MAC_CSC_KEY_PASSWORD` | The `.p12` export password |
+| `APPLE_ID` | Apple Account email with access to the signing team |
+| `APPLE_APP_SPECIFIC_PASSWORD` | App-specific password for notarization |
+| `APPLE_TEAM_ID` | The signing team's 10-character Team ID |
+
+Update `app/package.json` and `app/package-lock.json` to the same version,
+merge the release changes, then push a matching tag such as `v0.2.4`.
+The workflow rejects a tag that differs from the app version. To retry an
+existing tag, use **Actions → Release macOS App → Run workflow** and enter the
+tag. Retries replace assets in the draft; published releases require a new tag.
+The first signed release needs a new version tag containing this workflow and
+the tracked icon assets; the existing `v0.2.3` tag predates those assets.
+Review the draft's notes and downloads before publishing it. This workflow
+releases the desktop app; CLI npm and Windows/Linux publishing are separate.
+
 ### Run locally
 
-Install [Node.js 22](https://nodejs.org/) and npm, then run the app from its own
-package directory:
+Install [Node.js 22](https://nodejs.org/) (22.13.0 or newer) and npm for the
+build tools, then run the app from its own package directory. The app itself
+uses Electron's bundled Node 24, including during `npm run dev`:
 
 ```bash
 git clone https://github.com/tommy0103/obelisk.git
@@ -308,8 +342,9 @@ means the daemon owns writes, so CLI invocations remain read-only; a separate SQ
 writer lease prevents cross-process writes from overlapping. The
 `__app_last_successful_build__` marker records index freshness, not ownership.
 
-The CLI has zero runtime npm dependencies and uses Node 22's built-in
-`node:sqlite` with FTS5. The formal skill contains instructions and references,
+The CLI has zero runtime npm dependencies, requires Node >=22.13.0, and uses
+built-in `node:sqlite` with FTS5. The desktop app uses Electron's embedded Node
+24 and `better-sqlite3`. The formal skill contains instructions and references,
 not a second executable runtime.
 
 20K lines of scattered JSONL → something the agent can search() and sql() against in milliseconds.

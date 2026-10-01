@@ -539,7 +539,13 @@ function registerHandlers() {
   });
   ipcMain.handle('db:getSessionSubagents', () => { ipcReads.subagents++; return []; });
   ipcMain.handle('db:getSessionWorkflows', () => { ipcReads.workflows++; return []; });
-  ipcMain.handle('db:getSessionSummaries', () => { ipcReads.summaries++; return []; });
+  ipcMain.handle('db:getSessionSummaries', (event, id) => {
+    if (id === 'cold-open-layout-probe') {
+      event.sender.send('obelisk:session-updated', { sessionId });
+      return [];
+    }
+    ipcReads.summaries++; return [];
+  });
   ipcMain.handle('db:getMessageFullText', (_event, uuid) => uuid === focusMessageUuid ? fullTextSentinel : null);
   ipcMain.handle('db:getMemories', () => { globalReads.memories++; return []; });
   ipcMain.handle('db:getProjects', () => {
@@ -645,17 +651,23 @@ async function run() {
       requestAnimationFrame(sample);
     }
     requestAnimationFrame(sample);
+    // Fire after the snapshot commits but while cold layout is still hidden.
+    // A fixed timer can fire before this lazily loaded view mounts on CI.
+    const coldObserver = new MutationObserver(() => {
+      const timeline = document.querySelector('.virtual-timeline');
+      if (!timeline || document.querySelector('.flap-number')?.getAttribute('aria-label') !== '${messageCount}') return;
+      coldObserver.disconnect();
+      window.__coldUpdateVisibility = getComputedStyle(timeline).visibility;
+      void window.obelisk.getSessionSummaries('cold-open-layout-probe');
+    });
+    coldObserver.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-label'] });
     window.location.hash = ${JSON.stringify(`/sessions/${sessionId}`)};
   })()`, true);
-  const coldOpenUpdateTimer = setTimeout(() => {
-    win.webContents.send('obelisk:session-updated', { sessionId });
-  }, 10);
   await waitFor(
     win.webContents,
     `document.querySelector('.flap-number')?.getAttribute('aria-label') === '${messageCount}'`,
     'the cold-start session snapshot',
   );
-  clearTimeout(coldOpenUpdateTimer);
   for (let attempt = 0; attempt < 100 && ipcReads.patches === 0; attempt++) {
     await delay(10);
   }
@@ -672,10 +684,12 @@ async function run() {
       visibleRows: [...document.querySelectorAll('.virtual-timeline-row')]
         .filter(row => getComputedStyle(row).visibility !== 'hidden').length,
       patchReads: ${coldOpenPatchReads},
+      notificationVisibility: window.__coldUpdateVisibility,
     };
   })()`, true);
   const coldOpenRecovered = coldOpenVisibility.total === messageCount
     && coldOpenVisibility.patchReads > 0
+    && coldOpenVisibility.notificationVisibility === 'hidden'
     && !coldOpenVisibility.loading
     && coldOpenVisibility.headerVisibility === 'visible'
     && coldOpenVisibility.timelineVisibility === 'visible'

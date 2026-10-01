@@ -139,6 +139,7 @@ async function run() {
   ipcMain.handle('updates:install', () => { installCalls++; });
   const win = new BrowserWindow({ show: false, width: 1200, height: 800,
     webPreferences: { preload: join(appRoot, 'out/preload/index.js'), contextIsolation: true, nodeIntegration: false } });
+  win.webContents.on('console-message', (_event, details) => { if (details.level === 'error') console.error('Renderer:', details.message); });
   win.webContents.setWindowOpenHandler(({ url }) => { openedLinks.push(url); return { action: 'deny' }; });
   win.webContents.on('render-process-gone', (_event, details) => { throw new Error(`Renderer exited: ${details.reason}`); });
   await win.loadFile(join(appRoot, 'out/renderer/index.html'), { hash: `/sessions/${sessionId}` });
@@ -146,7 +147,13 @@ async function run() {
   await delay(400);
   const evaluate = code => win.webContents.executeJavaScript(code, true);
   await evaluate(`document.querySelector('.detail-wrap').scrollTop = document.querySelector('.detail-wrap').scrollHeight * .5`);
-  await delay(300);
+  await waitFor(win.webContents, `(() => {
+    const wrap = document.querySelector('.detail-wrap');
+    const timeline = document.querySelector('.virtual-timeline');
+    if (!wrap || !timeline || getComputedStyle(timeline).visibility === 'hidden' || document.querySelector('.first-open-loading')) return false;
+    const bounds = wrap.getBoundingClientRect();
+    return [...document.querySelectorAll('.virtual-timeline-row')].some(row => row.getBoundingClientRect().top >= bounds.top && row.getBoundingClientRect().top < bounds.bottom && row.querySelector('[data-uuid]'));
+  })()`, 'a visible mid-session reader anchor');
   const anchor = await evaluate(`(() => {
     const wrap = document.querySelector('.detail-wrap');
     const row = [...document.querySelectorAll('.virtual-timeline-row')].find(el => el.getBoundingClientRect().top >= wrap.getBoundingClientRect().top);

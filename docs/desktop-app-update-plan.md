@@ -131,7 +131,10 @@ node app/tests/packaged-updates.mjs fallback arm64 \
   app/release/mac-arm64/Obelisk.app /path/to/Sparkle/bin/sign_update
 ```
 
-For x64 use `x64` and `app/release/mac/Obelisk.app`. The harness copies the
+For x64 use `x64` and `app/release/mac/Obelisk.app`. On Apple Silicon with
+Rosetta installed, append the packaged ARM64 app path to the fallback/x64
+command to verify migration through a manifest containing both architectures
+(with x64 first). The replacement must relaunch as ARM64 and preserve data. The harness copies the
 packaged app into isolated versions, redirects HOME/userData in a fixture-only
 bootstrap, serves localhost feeds, and clicks the actual renderer restart
 action. It checks replacement version/architecture, relaunch, SQLite memory and

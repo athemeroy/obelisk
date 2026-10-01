@@ -23,6 +23,9 @@ const bundleId=`com.obelisk.acceptance.${mode}.${arch}.${path.basename(work).spl
 const tool=process.argv[5];
 if (!tool) throw new Error('Pass a packaged app path and the official sign_update path');
 const original=path.resolve(process.argv[4]);
+const migrationSource=process.argv[6] && path.resolve(process.argv[6]);
+if (migrationSource && (mode !== 'fallback' || arch !== 'x64' || process.arch !== 'arm64')) throw new Error('Migration acceptance requires fallback/x64 on Apple Silicon');
+const targetArch=migrationSource ? 'arm64' : arch;
 const oldApp=work+'/installed/Obelisk.app';
 const newApp=work+'/update/Obelisk.app';
 const home=work+'/home';
@@ -52,12 +55,13 @@ const feedBase=`http://127.0.0.1:${server.address().port}`;
 const portServer=createServer(); await new Promise(resolve=>portServer.listen(0,'127.0.0.1',resolve));
 const debugPort=portServer.address().port;await new Promise(resolve=>portServer.close(resolve));
 function run(command,args,options={}) {return execFileSync(command,args,{encoding:'utf8',timeout:120_000,...options});}
-async function fixture(target,version) {
-  await mkdir(path.dirname(target),{recursive:true}); run('ditto',[original,target]);
+async function fixture(target,version,source=original) {
+  await mkdir(path.dirname(target),{recursive:true}); run('ditto',[source,target]);
   const info=target+'/Contents/Info.plist';
   for(const [key,value] of Object.entries({CFBundleIdentifier:bundleId,CFBundleVersion:version,CFBundleShortVersionString:version,SUFeedURL:feedBase+`/appcast-${arch}.xml`,SUPublicEDKey:publicBytes.toString('base64')})) run('plutil',['-replace',key,'-string',value,info]);
   const appAsar=target+'/Contents/Resources/app.asar';
   const extracted=work+'/extract-'+version;
+  asar.uncache(appAsar);
   asar.extractAll(appAsar,extracted);
   const pkgPath=extracted+'/package.json';const pkg=JSON.parse(await readFile(pkgPath,'utf8'));pkg.version=version;await writeFile(pkgPath,JSON.stringify(pkg));
   await rename(extracted+'/out/main/index.js',extracted+'/out/main/app-main.js');
@@ -114,14 +118,24 @@ async function until(workFn,description,ms=60_000) {
 }
 try {
   await fixture(oldApp,'0.2.3');await fixture(newApp,'0.2.4');
-  const zip=work+`/Obelisk-0.2.4-mac-${arch}.zip`;
+  let intelEntry;
+  if (migrationSource) {
+    const intelZip=work+'/Obelisk-0.2.4-mac-x64.zip';
+    run('ditto',['-c','-k','--keepParent',newApp,intelZip]);
+    const intelBytes=await readFile(intelZip);
+    intelEntry={url:'Obelisk-0.2.4-mac-x64.zip',sha512:createHash('sha512').update(intelBytes).digest('base64'),size:intelBytes.length};
+    feed.set('/'+intelEntry.url,intelBytes);
+    await rm(newApp,{recursive:true,force:true});
+    await fixture(newApp,'0.2.4',migrationSource);
+  }
+  const zip=work+`/Obelisk-0.2.4-mac-${targetArch}.zip`;
   run('ditto',['-c','-k','--keepParent',newApp,zip]);
   const bytes=await readFile(zip);const signature=sign(null,bytes,privateKey).toString('base64');
   // Verify independent implementations agree on Sparkle's Ed25519 format.
   run(tool,['--verify','--ed-key-file',work+'/test-key',zip,signature]);
-  feed.set(`/Obelisk-0.2.4-mac-${arch}.zip`,bytes);
-  feed.set(`/appcast-${arch}.xml`,()=>`<?xml version="1.0"?><rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>Local fixture</title><item><title>Obelisk 0.2.4</title><description>Local acceptance update</description><enclosure url="${feedBase}/Obelisk-0.2.4-mac-${arch}.zip" sparkle:version="0.2.4" sparkle:shortVersionString="0.2.4" sparkle:edSignature="${badSignature?Buffer.alloc(64).toString('base64'):signature}" length="${bytes.length}" type="application/octet-stream" /></item></channel></rss>`);
-  feed.set('/latest-mac.yml',()=>JSON.stringify({version:fallbackVersion,files:[{url:`Obelisk-0.2.4-mac-${arch}.zip`,sha512:createHash('sha512').update(bytes).digest('base64'),size:bytes.length}],path:`Obelisk-0.2.4-mac-${arch}.zip`,sha512:createHash('sha512').update(bytes).digest('base64'),releaseDate:new Date().toISOString(),releaseNotes:'Local acceptance update'}));
+  feed.set(`/Obelisk-0.2.4-mac-${targetArch}.zip`,bytes);
+  feed.set(`/appcast-${arch}.xml`,()=>`<?xml version="1.0"?><rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>Local fixture</title><item><title>Obelisk 0.2.4</title><description>Local acceptance update</description><enclosure url="${feedBase}/Obelisk-0.2.4-mac-${targetArch}.zip" sparkle:version="0.2.4" sparkle:shortVersionString="0.2.4" sparkle:edSignature="${badSignature?Buffer.alloc(64).toString('base64'):signature}" length="${bytes.length}" type="application/octet-stream" /></item></channel></rss>`);
+  feed.set('/latest-mac.yml',()=>JSON.stringify({version:fallbackVersion,files:[...(intelEntry?[intelEntry]:[]),{url:`Obelisk-0.2.4-mac-${targetArch}.zip`,sha512:createHash('sha512').update(bytes).digest('base64'),size:bytes.length}],path:intelEntry?.url || `Obelisk-0.2.4-mac-${targetArch}.zip`,sha512:intelEntry?.sha512 || createHash('sha512').update(bytes).digest('base64'),releaseDate:new Date().toISOString(),releaseNotes:'Local acceptance update'}));
   await mkdir(home+'/.obelisk/recap',{recursive:true});await writeFile(home+'/.obelisk/recap/preserved.txt','keep this recap');
   run(binary,['-e',`const fs=require('node:fs'),p=require('node:path');
 const asar=p.join(process.env.FIXTURE_APP,'Contents/Resources/app.asar');
@@ -162,7 +176,11 @@ db.prepare('INSERT INTO memories(id,path,summary,created_at) VALUES (?,?,?,?)').
   await until(()=>cdp("!!document.querySelector('.update-notice .primary:not(:disabled)')"),'ready action rendered',30_000);
   await cdp("document.querySelector('.update-notice .primary').click(); true");
   const launched=await until(async()=>{const records=(await readFile(launches,'utf8')).trim().split('\n').map(line=>JSON.parse(line));return records.find(record=>record.version==='0.2.4');},'replacement app relaunched',120_000);
-  assert.equal(launched.arch,arch);assert.ok(launched.node.startsWith('24.'));
+  assert.equal(launched.arch,targetArch);
+  if (migrationSource) {
+    assert.ok(requests.includes('/Obelisk-0.2.4-mac-arm64.zip'));
+    assert.ok(!requests.includes('/Obelisk-0.2.4-mac-x64.zip'), 'Apple Silicon prefers ARM64 even when x64 is first in the manifest');
+  }assert.ok(launched.node.startsWith('24.'));
   assert.equal(await readFile(home+'/.obelisk/recap/preserved.txt','utf8'),'keep this recap');
   const stored=run(binary,['-e',`const p=require('node:path');const asar=p.join(process.env.FIXTURE_APP,'Contents/Resources/app.asar');const DB=require(p.join(asar,'node_modules/better-sqlite3'));const db=new DB(p.join(process.env.HOME,'.obelisk/obelisk.sqlite'),{readonly:true});const row=db.prepare('SELECT summary FROM memories WHERE id=?').get('update-preserved-memory');db.close();console.log(JSON.stringify(row));`],{env:{...process.env,HOME:home,ELECTRON_RUN_AS_NODE:'1',FIXTURE_APP:oldApp}});
   assert.equal(JSON.parse(stored).summary,'Preserve this memory');
@@ -181,5 +199,5 @@ db.prepare('INSERT INTO memories(id,path,summary,created_at) VALUES (?,?,?,?)').
   for(const line of lines)if(line.includes(work+'/')&&!line.includes('ps -axo')){const pid=Number(line.trim().split(/\s+/)[0]);if(pid!==process.pid)try{process.kill(pid,'SIGTERM')}catch {}}
 }
 
-console.log(`Packaged ${mode}/${arch} acceptance passed`);
+console.log(`Packaged ${mode}/${arch}${migrationSource?' → arm64':''} acceptance passed`);
 if (process.env.OBELISK_KEEP_UPDATE_FIXTURES !== '1') await rm(work,{recursive:true,force:true});

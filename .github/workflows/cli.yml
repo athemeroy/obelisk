@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   package:
     name: Node 22 / ${{ matrix.os }}
@@ -88,6 +91,7 @@ jobs:
             app/package-lock.json
       - run: npm ci
       - run: npm --prefix app ci
+      - run: npm run build:core
       - run: npm run typecheck
       - run: npm run lint
       - name: Rebuild native modules for Electron

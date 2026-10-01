@@ -1037,6 +1037,16 @@ async function run() {
     };
   })()`, true);
   await waitForStationaryLayout(win);
+  const restoredFocusVisible = await win.webContents.executeJavaScript(`(() => {
+    const target = document.querySelector('[data-uuid="${focusMessageUuid}"]');
+    const row = target?.closest('.virtual-timeline-row');
+    const wrap = document.querySelector('.detail-wrap');
+    if (!row || !wrap) return false;
+    const rect = row.getBoundingClientRect();
+    const viewport = wrap.getBoundingClientRect();
+    return rect.bottom > viewport.top && rect.top < viewport.bottom;
+  })()`, true);
+  assert(restoredFocusVisible, 'restored UUID navigation reveals the requested message after the preceding gesture settles');
   const stationaryAnchorBefore = await win.webContents.executeJavaScript(`(() => {
     const wrap = document.querySelector('.detail-wrap');
     const wrapRect = wrap.getBoundingClientRect();
@@ -1051,6 +1061,9 @@ async function run() {
       offset: anchorRow.getBoundingClientRect().top - wrapRect.top,
     };
   })()`, true);
+  const stationaryWindowBefore = await win.webContents.executeJavaScript(
+    `[...document.querySelectorAll('.virtual-timeline-row')].map(row => row.dataset.index)`, true,
+  );
   const stationaryTraces = [];
   for (let runIndex = 0; runIndex < stationaryAppendRuns; runIndex++) {
     stationaryTraces.push(await traceStationaryAppend(
@@ -1061,6 +1074,13 @@ async function run() {
     ));
     await delay(250);
   }
+  const stationaryWindowAfter = await win.webContents.executeJavaScript(
+    `[...document.querySelectorAll('.virtual-timeline-row')].map(row => row.dataset.index)`, true,
+  );
+  assert(
+    JSON.stringify(stationaryWindowBefore) === JSON.stringify(stationaryWindowAfter),
+    `tail appends preserve the settled reader window (${stationaryWindowBefore.length} -> ${stationaryWindowAfter.length} mounted rows)`,
+  );
   const liveHeaderMetadata = await win.webContents.executeJavaScript(`(() => ({
     text: document.querySelector('.session-meta-inline')?.textContent || '',
   }))()`, true);

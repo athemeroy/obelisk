@@ -138,6 +138,15 @@ export function useSessionTimelineViewport({
     useAnimationFrameWithResizeObserver: true,
     measureElement: measureVirtualElement,
     scrollToFn: scrollPolicy.scrollToFn,
+    onChange: instance => {
+      // virtual-core caches extracted indexes by the visible row range. Our
+      // pixel buffer also depends on measurements outside that range and the
+      // compositor's offset, so invalidate it when geometry is published.
+      instance.setOptions({
+        ...instance.options,
+        rangeExtractor: range => rangeExtractor(range),
+      });
+    },
   })));
 
   const virtualRows = computed(() => virtualizer.value.getVirtualItems());
@@ -371,6 +380,9 @@ export function useSessionTimelineViewport({
   }
 
   function runWithMeasurementRetry(scroll) {
+    // A new explicit location must not inherit the translation that compensated
+    // the previous wheel gesture. Reconcile against the unshifted timeline.
+    clearSuppressedAdjustment();
     scroll();
     const targetWindow = scrollElement.value?.ownerDocument?.defaultView;
     if (!targetWindow) return Promise.resolve();

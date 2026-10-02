@@ -860,20 +860,28 @@ async function run() {
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const after = row?.getBoundingClientRect().height || 0;
     const wrap = document.querySelector('.detail-wrap');
-    wrap.scrollTop = wrap.scrollHeight * 0.55;
+    const requestedScrollTop = wrap.scrollHeight * 0.55;
+    wrap.scrollTop = requestedScrollTop;
     await new Promise(resolve => setTimeout(resolve, 250));
+    const mountedIndexes = [...document.querySelectorAll('.virtual-timeline-row')].map(element => Number(element.dataset.index));
+    const unmountState = {
+      requestedScrollTop, scrollTop: wrap.scrollTop, scrollHeight: wrap.scrollHeight,
+      firstMounted: Math.min(...mountedIndexes), lastMounted: Math.max(...mountedIndexes),
+      current: document.querySelector('.msg-nav-current')?.textContent,
+      translate: document.querySelector('.virtual-timeline')?.style.translate,
+    };
     const unmounted = !document.querySelector('[data-view-key="tool:call-1"]');
     document.querySelector('button[title="First"]')?.click();
     await new Promise(resolve => setTimeout(resolve, 350));
     return {
       before,
       after,
-      unmounted,
+      unmounted, unmountState,
       restored: Boolean(document.querySelector('[data-view-key="tool:call-1"].open')),
     };
   })()`, true);
   assert(disclosure.after > disclosure.before, `expanded tool row remeasures from ${disclosure.before}px to ${disclosure.after}px`);
-  assert(disclosure.unmounted, 'the expanded tool row unmounts outside overscan');
+  assert(disclosure.unmounted, `the expanded tool row unmounts outside overscan (${JSON.stringify(disclosure.unmountState)})`);
   assert(disclosure.restored, 'disclosure state survives unmount and remount');
 
   const passiveScrollSettlement = await win.webContents.executeJavaScript(`new Promise(resolve => {

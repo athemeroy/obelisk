@@ -263,6 +263,7 @@ async function startRendererTrace(win, { captureScreenshots = false } = {}) {
       'blink.user_timing',
       'toplevel',
       captureScreenshots ? 'disabled-by-default-devtools.screenshot' : '',
+      captureScreenshots ? 'viz' : '',
     ].filter(Boolean).join(','),
     options: 'record-as-much-as-possible',
     transferMode: 'ReportEvents',
@@ -339,6 +340,7 @@ async function traceWheelPaintContinuity(win, { updateTool = false } = {}) {
     };
     const recordWheel = event => {
       probe.wheels++;
+      if (probe.wheels === 1) probe.previous = performance.now();
       probe.wheelDistance += Math.abs(event.deltaY);
       if (probe.wheels === 3 && ${JSON.stringify(updateTool)}) {
         void window.obelisk.getSessionSummaries('wheel-bash-update-probe');
@@ -367,36 +369,45 @@ async function traceWheelPaintContinuity(win, { updateTool = false } = {}) {
       probe.cleanup();
     };
     deadline = setTimeout(() => probe.finish(new Error('Continuous wheel probe timed out')), 8000);
+    function samplePaintedRows() {
+      const wrapRect = wrap.getBoundingClientRect();
+      const rows = [...document.querySelectorAll('.virtual-timeline-row')]
+        .map(row => ({
+          index: Number(row.dataset.index),
+          rect: row.getBoundingClientRect(),
+        }))
+        .filter(({ rect }) => rect.bottom > wrapRect.top && rect.top < wrapRect.bottom)
+        .sort((left, right) => left.index - right.index);
+      let overlaps = 0;
+      for (let index = 1; index < rows.length; index++) {
+        if (rows[index].rect.top < rows[index - 1].rect.bottom - 1) overlaps++;
+      }
+      if (overlaps > probe.maxVisibleOverlaps) {
+        probe.maxVisibleOverlaps = overlaps;
+        probe.overlapExample = rows.slice(0, 6).map(row => ({
+          index: row.index,
+          top: row.rect.top,
+          bottom: row.rect.bottom,
+        }));
+      }
+    }
     function frame(now) {
       if (probe.stop) return;
-      try {
+      if (probe.wheels > 0) {
         probe.gaps.push(now - probe.previous);
         probe.previous = now;
-        const wrapRect = wrap.getBoundingClientRect();
-        const rows = [...document.querySelectorAll('.virtual-timeline-row')]
-          .map(row => ({
-            index: Number(row.dataset.index),
-            rect: row.getBoundingClientRect(),
-          }))
-          .filter(({ rect }) => rect.bottom > wrapRect.top && rect.top < wrapRect.bottom)
-          .sort((left, right) => left.index - right.index);
-        let overlaps = 0;
-        for (let index = 1; index < rows.length; index++) {
-          if (rows[index].rect.top < rows[index - 1].rect.bottom - 1) overlaps++;
-        }
-        if (overlaps > probe.maxVisibleOverlaps) {
-          probe.maxVisibleOverlaps = overlaps;
-          probe.overlapExample = rows.slice(0, 6).map(row => ({
-            index: row.index,
-            top: row.rect.top,
-            bottom: row.rect.bottom,
-          }));
-        }
-        // End on the frame following the complete input distance. Host-side
-        // timer/IPC latency must not extend this window into post-scroll work.
-        if (probe.wheelDistance >= 960 - 0.001) probe.finish();
-        else requestAnimationFrame(frame);
-      } catch (error) { probe.finish(error); }
+      }
+      const complete = probe.wheelDistance >= 960 - 0.001;
+      // rAF runs before layout/paint. Reading every row there forced a layout
+      // inside the benchmark itself. Sample painted geometry in the next task.
+      setTimeout(() => {
+        if (probe.stop) return;
+        try {
+          samplePaintedRows();
+          if (complete) probe.finish();
+        } catch (error) { probe.finish(error); }
+      }, 0);
+      if (!complete) requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);
   })()`, true);
@@ -443,6 +454,13 @@ async function traceWheelPaintContinuity(win, { updateTool = false } = {}) {
     .filter(event => event.name === 'Screenshot' && event.args?.snapshot);
   const deviations = screenshots.map(screenshotContentDeviation);
   const taskMetrics = rendererTaskMetrics(traceEvents, startMark, endMark);
+  const start = traceEvents.find(event => event.name === startMark);
+  const end = traceEvents.find(event => event.name === endMark);
+  const drawTimes = traceEvents
+    .filter(event => event.name === 'Display::DrawAndSwap' && event.ph === 'X'
+      && event.ts >= start.ts && event.ts <= end.ts)
+    .map(event => event.ts).sort((left, right) => left - right);
+  const compositorGaps = drawTimes.slice(1).map((time, index) => (time - drawTimes[index]) / 1000);
   return {
     before,
     after: frameProbe.after,
@@ -450,6 +468,9 @@ async function traceWheelPaintContinuity(win, { updateTool = false } = {}) {
     screenshots: screenshots.length,
     minDeviation: Math.min(Infinity, ...deviations),
     maxFrameGap: Math.max(0, ...frameProbe.gaps),
+    compositorFrames: drawTimes.length,
+    maxCompositorFrameGap: compositorGaps.length ? Math.max(...compositorGaps) : null,
+    slowestTaskCpuMs: taskMetrics.slowestTaskCpuMs,
     maxTaskMs: taskMetrics.maxTaskMs,
     maxFunctionCallMs: taskMetrics.maxFunctionCallMs,
     updateVisibleAtWheel: frameProbe.updateVisibleAtWheel,
@@ -490,10 +511,11 @@ function rendererTaskMetrics(traceEvents, startMark, endMark) {
       ))
       .sort((a, b) => (b.dur || 0) - (a.dur || 0))
       .slice(0, 8)
-      .map(event => ({ name: event.name, durationMs: (event.dur || 0) / 1000, args: event.args }))
+      .map(event => ({ name: event.name, durationMs: (event.dur || 0) / 1000, cpuDurationMs: event.tdur === undefined ? null : event.tdur / 1000, args: event.args }))
     : [];
   return {
     tasks: taskDurations.length,
+    slowestTaskCpuMs: slowest?.tdur === undefined ? null : slowest.tdur / 1000,
     maxTaskMs: Math.max(0, ...taskDurations),
     maxFunctionCallMs: Math.max(0, ...traceEvents
       .filter(event => (
@@ -1122,7 +1144,7 @@ async function run() {
     `[...document.querySelectorAll('.virtual-timeline-row')].map(row => row.dataset.index)`, true,
   );
   await win.webContents.executeJavaScript(`(() => {
-    window.__stationaryCounterPrefix = [...document.querySelectorAll('.flap-number .flap-slot')].slice(0, -1);
+    window.__stationaryCounterSlots = [...document.querySelectorAll('.flap-number .flap-slot')];
   })()`, true);
   const stationaryTraces = [];
   for (let runIndex = 0; runIndex < stationaryAppendRuns; runIndex++) {
@@ -1141,14 +1163,14 @@ async function run() {
     JSON.stringify(stationaryWindowBefore) === JSON.stringify(stationaryWindowAfter),
     `tail appends preserve the settled reader window (${stationaryWindowBefore.length} -> ${stationaryWindowAfter.length} mounted rows)`,
   );
-  const counterPrefixRetained = await win.webContents.executeJavaScript(`(() => {
-    const previous = window.__stationaryCounterPrefix;
-    delete window.__stationaryCounterPrefix;
-    const current = [...document.querySelectorAll('.flap-number .flap-slot')].slice(0, -1);
+  const counterSlotsRetained = await win.webContents.executeJavaScript(`(() => {
+    const previous = window.__stationaryCounterSlots;
+    delete window.__stationaryCounterSlots;
+    const current = [...document.querySelectorAll('.flap-number .flap-slot')];
     return previous.length > 0 && current.length === previous.length
       && current.every((element, index) => element === previous[index]);
   })()`, true);
-  assert(counterPrefixRetained, 'tail appends retain unchanged counter digits instead of rebuilding their paint layers');
+  assert(counterSlotsRetained, 'tail appends retain all counter paint containers, including changing digits');
   const liveHeaderMetadata = await win.webContents.executeJavaScript(`(() => ({
     text: document.querySelector('.session-meta-inline')?.textContent || '',
   }))()`, true);

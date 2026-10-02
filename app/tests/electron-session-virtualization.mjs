@@ -828,7 +828,13 @@ async function run() {
     };
     const unmounted = !document.querySelector('[data-view-key="tool:call-1"]');
     document.querySelector('button[title="First"]')?.click();
-    await new Promise(resolve => setTimeout(resolve, 350));
+    // A hidden Linux window can publish the jump before Vue remounts rows.
+    // Wait for remount, then assert the state separately so a closed row fails.
+    const remountDeadline = performance.now() + 8000;
+    while (!document.querySelector('[data-view-key="tool:call-1"]')) {
+      if (performance.now() > remountDeadline) throw new Error('First navigation did not remount the tool row');
+      await new Promise(resolve => setTimeout(resolve, 40));
+    }
     return {
       before,
       after,
@@ -1068,7 +1074,8 @@ async function run() {
     );
   }
   win.setContentSize(...originalContentSize);
-  await delay(250);
+  // This scenario starts after the preceding gesture and resize have settled.
+  await waitForStationaryLayout(win);
   await win.webContents.executeJavaScript(
     `window.location.hash = '#/sessions/${sessionId}?focus=${focusMessageUuid}'`,
     true,

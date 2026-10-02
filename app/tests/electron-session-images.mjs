@@ -293,6 +293,8 @@ async function run() {
         preload: join(appRoot, 'out', 'preload', 'index.js'),
         contextIsolation: true,
         nodeIntegration: false,
+        // The hidden fixture models continuous foreground wheel input.
+        backgroundThrottling: false,
       },
     });
 

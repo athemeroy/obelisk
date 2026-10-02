@@ -562,8 +562,14 @@ async function traceStationaryAppend(win, index, expectedTotal, runIndex) {
     const expected = ${JSON.stringify(String(expectedTotal))};
     const counter = document.querySelector('.flap-number');
     performance.mark(${JSON.stringify(startMark)});
-    window.__obeliskLiveCommitObserved = new Promise(resolve => {
+    window.__obeliskLiveCommitObserved = new Promise((resolve, reject) => {
+      let observer = null;
+      const deadline = setTimeout(() => {
+        observer?.disconnect();
+        reject(new Error('Stationary live commit did not publish its counter'));
+      }, 8000);
       const finish = () => requestAnimationFrame(() => {
+        clearTimeout(deadline);
         performance.mark(${JSON.stringify(endMark)});
         resolve(true);
       });
@@ -571,8 +577,9 @@ async function traceStationaryAppend(win, index, expectedTotal, runIndex) {
         finish();
         return;
       }
-      const observer = new MutationObserver(() => {
-        if (counter?.getAttribute('aria-label') !== expected) return;
+      if (!counter) { clearTimeout(deadline); reject(new Error('Missing live counter')); return; }
+      observer = new MutationObserver(() => {
+        if (counter.getAttribute('aria-label') !== expected) return;
         observer.disconnect();
         finish();
       });

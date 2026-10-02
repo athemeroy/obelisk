@@ -167,17 +167,29 @@ the app daemon.
 - **Recap** — shareable weekly/monthly recap cards with archetype theming
 - **Settings** — data source configuration, auto-refresh, rebuild index
 
-Prebuilt releases are currently available for macOS from
+Prebuilt releases are available for macOS and Linux amd64 from
 [Releases](https://github.com/tommy0103/obelisk/releases). The source app can be
 run locally on macOS, Windows, and Linux.
 
-### Release the macOS app
+### Release the desktop app
 
-The **Release macOS App** workflow builds signed and notarized DMG/ZIP packages
-for Apple Silicon (`arm64`) and Intel (`x64`). It runs the repository checks and
-all five Electron suites, then verifies signatures, notarization tickets and
-packaged native modules in the apps extracted from both distribution formats.
-All four packages are uploaded to a GitHub Release draft once both builds pass.
+The **Release Desktop App** workflow builds Developer ID signed/notarized
+DMG and ZIP packages for macOS Apple Silicon (`arm64`) and Intel (`x64`), plus
+`Obelisk-<version>-linux-amd64.deb` for Linux Intel/AMD 64-bit systems. It runs
+repository checks and all six Electron suites, verifies the packaged native
+resources, and installs the Debian package on Ubuntu 22.04 and 24.04. All
+packages and update feeds are uploaded to one GitHub Release draft after the
+required build and acceptance jobs pass.
+
+The app checks and downloads updates in the background. Settings → About
+supports manual checks and retry; the sidebar notice offers View changes,
+Later, and Update & restart. macOS uses Sparkle, falling back to
+`electron-updater` only if the native bridge cannot initialize. Linux `.deb`
+installations use `DebUpdater`; replacing the system installation requests
+administrator authorization through Polkit. Cancelling leaves the staged
+update retryable. Existing 0.2.2 installations require one manual upgrade to
+this updater-enabled release. Linux arm64, AppImage and Windows update channels
+are not enabled by this workflow.
 
 The build host uses Node 22; the app runs on Electron 43's embedded Node 24.
 Artifact verification reports the embedded Electron, Node and ABI versions.
@@ -193,16 +205,24 @@ Configure these repository Actions secrets:
 | `APPLE_ID` | Apple Account email with access to the signing team |
 | `APPLE_APP_SPECIFIC_PASSWORD` | App-specific password for notarization |
 | `APPLE_TEAM_ID` | The signing team's 10-character Team ID |
+| `SPARKLE_ED_PRIVATE_KEY` | Exported Sparkle EdDSA private key matching the app's trusted public key |
+
+The `SPARKLE_ED_PUBLIC_KEY` Actions variable must match
+`app/build/sparkle-public-key.txt`. Linux Debian builds need no Apple credentials.
 
 Update `app/package.json` and `app/package-lock.json` to the same version,
 merge the release changes, then push a matching tag such as `v0.2.4`.
-The workflow rejects a tag that differs from the app version. To retry an
-existing tag, use **Actions → Release macOS App → Run workflow** and enter the
-tag. Retries replace assets in the draft; published releases require a new tag.
-The first signed release needs a new version tag containing this workflow and
-the tracked icon assets; the existing `v0.2.3` tag predates those assets.
-Review the draft's notes and downloads before publishing it. This workflow
-releases the desktop app; CLI npm and Windows/Linux publishing are separate.
+To retry an existing tag, select that tag as the ref in **Actions → Release
+Desktop App → Run workflow**; the optional tag input checks that selection.
+The workflow rejects version mismatches and never overwrites a published
+release. Review the draft's notes and downloads before publishing it.
+
+Use `verify_only=true` on a branch to build and verify all platforms without
+creating a tag or Release. **Build and verify Debian App** also runs directly
+on relevant PRs or by manual dispatch, leaving its verified `.deb` as an Actions
+artifact. Its two-version acceptance uses the actual package, shipped UI,
+`DebUpdater`, and real dpkg installation, with a test substitute for the
+administrator-authorization dialog. CLI npm publication remains independent.
 
 ### Run locally
 

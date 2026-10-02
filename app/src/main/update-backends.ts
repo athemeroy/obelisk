@@ -44,7 +44,15 @@ export async function createMacUpdateBackend(receive: (event: UpdateEvent) => vo
     log(`Sparkle initialization failed: ${error instanceof Error ? error.message : String(error)}`);
   }
   log('Using electron-updater because the Sparkle bridge could not initialize');
-  const { autoUpdater } = electronUpdater;
+  return createElectronUpdateBackend(receive, electronUpdater.autoUpdater);
+}
+
+export function createDebUpdateBackend(receive: (event: UpdateEvent) => void): UpdateBackend {
+  return createElectronUpdateBackend(receive, new electronUpdater.DebUpdater());
+}
+
+function createElectronUpdateBackend(receive: (event: UpdateEvent) => void,
+  autoUpdater: typeof electronUpdater.autoUpdater): UpdateBackend {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.allowPrerelease = false;

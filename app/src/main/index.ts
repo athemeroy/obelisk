@@ -528,12 +528,17 @@ const updateLifecycle = createUpdateLifecycle({
   stop: () => stopBackgroundResources({ stopWorker: true }),
   resume: () => { if (!appQuitRequested) startBackgroundResources({ watchSources: loadPersistedSettings().autoRefresh !== false }); },
 });
+// Only the shipped amd64 Debian target has a verified Linux update channel.
+// AppImage/source builds and other architectures must not consume its feed.
+const isDebInstall = app.isPackaged && process.platform === 'linux' && process.arch === 'x64' &&
+  await fs.promises.readFile(path.join(process.resourcesPath, 'package-type'), 'utf8')
+    .then(value => value.trim() === 'deb', () => false);
 const updater = createUpdateService({
-  enabled: app.isPackaged === true && process.platform === 'darwin',
+  enabled: app.isPackaged === true && (process.platform === 'darwin' || isDebInstall),
   version: app.getVersion(),
   createBackend: async receive => {
-    const { createMacUpdateBackend } = await import('./update-backends.ts');
-    return createMacUpdateBackend(receive);
+    const { createMacUpdateBackend, createDebUpdateBackend } = await import('./update-backends.ts');
+    return process.platform === 'darwin' ? createMacUpdateBackend(receive) : createDebUpdateBackend(receive);
   },
   prepare: updateLifecycle.prepare,
   recover: updateLifecycle.recover,

@@ -57,7 +57,6 @@ test('timeline viewport owns measurement and anchoring while SessionDetail alone
   assert.match(viewportModule, /useAnimationFrameWithResizeObserver:\s*true/);
   assert.match(viewportModule, /scrollPaddingEnd/);
   assert.match(viewportModule, /scrollToIndex/);
-  assert.match(viewportModule, /if \(!element\) return/);
   assert.match(sessionDetail, /isScrolling:\s*\(\) => userScroll\.isActive\(\)/);
   assert.doesNotMatch(sessionDetail, /timelineViewport\.isScrolling/);
   assert.match(
@@ -140,4 +139,39 @@ test('live patch state advances only after the visible snapshot commit is accept
     /materializeSessionDetailPatch\(snapshot\.patchRequest\);[\s\S]*await commitSessionSnapshot\(latest\);[\s\S]*acceptMessagePatch[\s\S]*clearSessionDirty/,
   );
   assert.match(commitLiveSnapshot, /markSessionDirty\(snapshot\.sessionId\)/);
+});
+
+// Vue sends a null ref on unmount. Exercise the real virtualizer's cleanup
+// through our wrapper rather than pinning a source-text null guard.
+test('unmounting virtual rows releases disconnected DOM references', async t => {
+  const virtualModuleUrl = new URL('../app/node_modules/@tanstack/vue-virtual/dist/esm/index.js', import.meta.url);
+  const virtualModule = await import(virtualModuleUrl.href);
+  const { effectScope, ref } = await import('../app/node_modules/vue/index.mjs');
+  let instance;
+  const virtualMock = t.mock.module(virtualModuleUrl, {
+    namedExports: {
+      ...virtualModule,
+      useVirtualizer(options) {
+        const state = virtualModule.useVirtualizer(options);
+        instance = state.value;
+        return state;
+      },
+    },
+  });
+  t.after(() => virtualMock.restore());
+  const { useSessionTimelineViewport } = await import('../app/src/renderer/src/session-timeline-viewport.mjs?unmount-cleanup');
+  const scope = effectScope();
+  t.after(() => scope.stop());
+  const viewport = scope.run(() => useSessionTimelineViewport({
+    items: ref([{ key: 'row-1', kind: 'message', message: { text: 'row' } }]),
+    scrollElement: ref(null),
+    timelineElement: ref(null),
+    scrollMargin: ref(0),
+  }));
+  const row = { isConnected: true, getAttribute: () => '0', offsetHeight: 120 };
+  viewport.measureElement(row);
+  assert.equal(instance.elementsCache.get('row-1'), row, 'the mounted row is registered');
+  row.isConnected = false;
+  viewport.measureElement(null);
+  assert.equal(instance.elementsCache.size, 0, 'the unmounted row is no longer retained');
 });

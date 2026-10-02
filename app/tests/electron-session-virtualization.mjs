@@ -164,7 +164,7 @@ async function probeOrdinaryScrollGeometry(win, { startIndex, direction }) {
     `ordinary-scroll geometry start ${startIndex}`,
   );
   await delay(100);
-  return win.webContents.executeJavaScript(`new Promise(resolve => {
+  return win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
     const wrap = document.querySelector('.detail-wrap');
     const direction = ${direction};
     const originalScrollTo = wrap.scrollTo.bind(wrap);
@@ -175,6 +175,17 @@ async function probeOrdinaryScrollGeometry(win, { startIndex, direction }) {
     let previousGeometry = null;
     let maxResidualMotion = 0;
     let residualExample = null;
+    let stopped = false;
+    const cleanup = () => {
+      stopped = true;
+      clearTimeout(deadline);
+      wrap.scrollTo = originalScrollTo;
+      wrap.removeEventListener('scrollend', blockAutomaticScrollEnd, true);
+    };
+    const deadline = setTimeout(() => {
+      cleanup();
+      reject(new Error('Ordinary-scroll geometry probe timed out'));
+    }, 8000);
     wrap.addEventListener('scrollend', blockAutomaticScrollEnd, true);
     wrap.scrollTo = (...args) => {
       programmaticScrolls++;
@@ -183,6 +194,11 @@ async function probeOrdinaryScrollGeometry(win, { startIndex, direction }) {
     wrap.dispatchEvent(new WheelEvent('wheel', { deltaY: direction * 70, bubbles: true }));
     const startedAt = performance.now();
     function frame(now) {
+      if (stopped) return;
+      try { sampleFrame(now); }
+      catch (error) { cleanup(); reject(error); }
+    }
+    function sampleFrame(now) {
       wrap.scrollTop += direction * 100;
       const wrapRect = wrap.getBoundingClientRect();
       const scrollTop = wrap.scrollTop;
@@ -230,8 +246,7 @@ async function probeOrdinaryScrollGeometry(win, { startIndex, direction }) {
         requestAnimationFrame(frame);
         return;
       }
-      wrap.scrollTo = originalScrollTo;
-      wrap.removeEventListener('scrollend', blockAutomaticScrollEnd, true);
+      cleanup();
       wrap.dispatchEvent(new Event('scrollend'));
       resolve({
         programmaticScrolls,

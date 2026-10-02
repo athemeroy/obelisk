@@ -271,8 +271,12 @@ export function useSessionTimelineViewport({
   }
 
   function measureElement(element) {
-    if (!element) return;
     const instance = virtualizer.value;
+    if (!element) {
+      // Vue's null ref lets virtual-core unobserve and release detached rows.
+      instance.measureElement(null);
+      return;
+    }
     const index = instance.indexFromElement(element);
     const key = instance.options.getItemKey(index);
     const isNewElement = instance.elementsCache.get(key) !== element;

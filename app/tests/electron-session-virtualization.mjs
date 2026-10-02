@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createSessionPatch } from '../src/shared/session-patch.mjs';
 import { assembleSessionDetail } from '../src/shared/session-detail-assembly.mjs';
+import { rendererTaskMetrics } from './renderer-trace-metrics.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = join(here, '..');
@@ -487,6 +488,9 @@ async function traceWheelPaintContinuity(win, { updateTool = false } = {}) {
     maxCompositorFrameGap: compositorGaps.length ? Math.max(...compositorGaps) : null,
     slowestTaskCpuMs: taskMetrics.slowestTaskCpuMs,
     maxTaskMs: taskMetrics.maxTaskMs,
+    maxTaskWorkMs: taskMetrics.maxTaskWorkMs,
+    tasksWithoutCpu: taskMetrics.tasksWithoutCpu,
+    maxFunctionWorkMs: taskMetrics.maxFunctionWorkMs,
     maxFunctionCallMs: taskMetrics.maxFunctionCallMs,
     updateVisibleAtWheel: frameProbe.updateVisibleAtWheel,
     maxVisibleOverlaps: frameProbe.maxVisibleOverlaps,
@@ -495,54 +499,6 @@ async function traceWheelPaintContinuity(win, { updateTool = false } = {}) {
     // A blank content crop is almost uniform (< 0.035); rendered fixture rows
     // stay comfortably above 0.06 even while the compositor is scrolling.
     blankFrames: deviations.filter(value => value < 0.035).length,
-  };
-}
-
-function rendererTaskMetrics(traceEvents, startMark, endMark) {
-  const start = traceEvents.find(event => event.name === startMark);
-  const end = [...traceEvents].reverse().find(event => event.name === endMark);
-  if (!start || !end) throw new Error(`Missing renderer trace marks: ${startMark}, ${endMark}`);
-  const tasks = traceEvents
-    .filter(event => (
-      /RunTask$/.test(event.name || '')
-      && event.ph === 'X'
-      && event.pid === start.pid
-      && event.tid === start.tid
-      && event.ts >= start.ts
-      && event.ts <= end.ts
-    ));
-  const taskDurations = tasks.map(event => event.dur / 1000);
-  if (taskDurations.length === 0) throw new Error('Renderer trace contained no RunTask events');
-  const slowest = tasks.reduce((best, task) => !best || task.dur > best.dur ? task : best, null);
-  const slowestChildren = slowest
-    ? traceEvents
-      .filter(event => (
-        event.ph === 'X'
-        && event.pid === slowest.pid
-        && event.tid === slowest.tid
-        && event !== slowest
-        && event.ts >= slowest.ts
-        && event.ts + (event.dur || 0) <= slowest.ts + slowest.dur
-      ))
-      .sort((a, b) => (b.dur || 0) - (a.dur || 0))
-      .slice(0, 8)
-      .map(event => ({ name: event.name, durationMs: (event.dur || 0) / 1000, cpuDurationMs: event.tdur === undefined ? null : event.tdur / 1000, args: event.args }))
-    : [];
-  return {
-    tasks: taskDurations.length,
-    slowestTaskCpuMs: slowest?.tdur === undefined ? null : slowest.tdur / 1000,
-    maxTaskMs: Math.max(0, ...taskDurations),
-    maxFunctionCallMs: Math.max(0, ...traceEvents
-      .filter(event => (
-        event.name === 'FunctionCall'
-        && event.ph === 'X'
-        && event.pid === start.pid
-        && event.tid === start.tid
-        && event.ts >= start.ts
-        && event.ts <= end.ts
-      ))
-      .map(event => (event.dur || 0) / 1000)),
-    slowestChildren,
   };
 }
 
@@ -944,12 +900,16 @@ async function run() {
     `ordinary wheel scrolling never overlaps visible rows (${JSON.stringify(wheelBaseline.overlapExample)})`,
   );
   assert(
-    wheelPaint.maxFrameGap < 50,
-    `Bash tool update avoids a multi-frame renderer stall while scrolling (${JSON.stringify(wheelPaint)})`,
+    wheelPaint.maxTaskWorkMs < 50,
+    `Bash tool update avoids a 50ms renderer CPU long task while scrolling (${JSON.stringify(wheelPaint)})`,
   );
   assert(
-    wheelPaint.maxFunctionCallMs <= wheelBaseline.maxFunctionCallMs + 2,
-    `Bash patch preparation stays off the scrolling renderer task budget (baseline ${wheelBaseline.maxFunctionCallMs.toFixed(2)}ms, update ${wheelPaint.maxFunctionCallMs.toFixed(2)}ms)`,
+    wheelPaint.maxFrameGap < 250,
+    `native wheel scrolling avoids catastrophic stalls (${wheelPaint.maxFrameGap.toFixed(1)}ms; native draw gap ${wheelPaint.maxCompositorFrameGap}ms)`,
+  );
+  assert(
+    wheelPaint.maxFunctionWorkMs <= wheelBaseline.maxFunctionWorkMs + 2,
+    `Bash patch preparation stays off the scrolling renderer task budget (baseline ${wheelBaseline.maxFunctionWorkMs.toFixed(2)}ms, update ${wheelPaint.maxFunctionWorkMs.toFixed(2)}ms)`,
   );
   assert(
     wheelPaint.updateVisibleAtWheel === null,
@@ -1242,7 +1202,7 @@ async function run() {
   );
   for (const [runIndex, trace] of stationaryTraces.entries()) {
     if (trace.maxTaskMs >= 8.33) console.log(`SLOWEST RENDERER TASK ${runIndex + 1}: ${JSON.stringify(trace.slowestChildren)}`);
-    assert(trace.maxTaskMs < 8.33, `stationary live commit ${runIndex + 1} stays inside a 120Hz renderer task budget (${trace.maxTaskMs.toFixed(2)}ms across ${trace.tasks} tasks)`);
+    assert(trace.maxTaskWorkMs < 8.33, `stationary live commit ${runIndex + 1} stays inside a 120Hz renderer work budget (${trace.maxTaskWorkMs.toFixed(2)}ms work, ${trace.maxTaskMs.toFixed(2)}ms wall across ${trace.tasks} tasks)`);
   }
 
   await win.webContents.executeJavaScript(`(() => {

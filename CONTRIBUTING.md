@@ -269,6 +269,20 @@ ownership, merge semantics, and recovery guarantees; check those contracts befor
 extending an optimization to another path. Make remaining costs and deliberate
 tradeoffs explicit.
 
+Timeline performance probes on shared hosted CI gate renderer **work**, using
+Chromium's thread CPU duration (`tdur`) when present and conservatively using the
+complete wall duration (`dur`) otherwise. Invalid durations fail measurement.
+Examine every renderer task, not only the task with the longest wall duration.
+The native wheel probe rejects work tasks >=50ms; stationary live commits retain
+an 8.33ms work budget; patch-preparation function work may exceed its no-update
+baseline by at most 2ms. Keep wall durations, RAF gaps and native compositor gaps
+in the diagnostics, and retain a <250ms catastrophic RAF-stall guardrail on the
+native wheel probe. Blank-frame, overlap, input-coverage and reader-anchor
+assertions remain required. These checks detect application work regressions and
+severe stalls; they do not certify that every displayed frame arrives within
+50ms on a shared runner. A controlled-performance-machine requirement is not
+part of the repository's CI infrastructure.
+
 ---
 
 ## Verification contract

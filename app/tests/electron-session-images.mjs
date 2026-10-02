@@ -286,14 +286,16 @@ async function run() {
     ];
     registerHandlers();
     win = new BrowserWindow({
-      show: false,
+      // Hidden Linux windows still suspend rAF despite backgroundThrottling.
+      // Map a real foreground surface under Xvfb for the continuous gesture.
+      show: true,
       width: 1200,
       height: 800,
       webPreferences: {
         preload: join(appRoot, 'out', 'preload', 'index.js'),
         contextIsolation: true,
         nodeIntegration: false,
-        // The hidden fixture models continuous foreground wheel input.
+        // Keep the foreground gesture running if another test window focuses.
         backgroundThrottling: false,
       },
     });

@@ -292,22 +292,25 @@ for (const [identityName, inode] of [['unavailable', 0], ['unsafe', Number.MAX_S
     t.after(() => fsMock.restore());
     const { parse: parseWithoutIdentity } = await import(`../packages/core/src/providers/codex.ts?${identityName}-identity`);
     const finalPath = join(makeTempDir('obelisk-codex-identity-final-'), 'rollout.jsonl');
-    writeJsonl(finalPath, [...prefixLines(), ...suffixLines()]);
+    copyFileSync(REAL_FIXTURE, finalPath);
     const dbFinal = freshDb();
     t.after(() => dbFinal.close());
-    persist(dbFinal, unit(finalPath), parse(unit(finalPath), null));
+    const finalUnit = { key: finalPath, sessionId: '', meta: { source: 'codex', guardian: false } };
+    persist(dbFinal, finalUnit, parse(finalUnit, null));
 
     const path = join(makeTempDir('obelisk-codex-identity-split-'), 'rollout.jsonl');
-    writeJsonl(path, prefixLines());
+    copyFileSync(REAL_PREFIX_FIXTURE, path);
     const dbSplit = freshDb();
     t.after(() => dbSplit.close());
-    const cursor = persist(dbSplit, unit(path), parseWithoutIdentity(unit(path), null));
-    const suffix = `${suffixLines().map(line => JSON.stringify(line)).join('\n')}\n`;
+    const sourceUnit = { key: path, sessionId: '', meta: { source: 'codex', guardian: false } };
+    const cursor = persist(dbSplit, sourceUnit, parseWithoutIdentity(sourceUnit, null));
+    const lines = readFileSync(REAL_FIXTURE, 'utf8').split('\n').slice(60).filter(Boolean);
+    const suffix = `${lines.join('\n')}\n`;
     appendFileSync(path, suffix);
     const metrics = createCodexParseMetrics();
-    persist(dbSplit, unit(path), parseWithoutIdentity(unit(path), cursor, metrics));
+    persist(dbSplit, sourceUnit, parseWithoutIdentity(sourceUnit, cursor, metrics));
     assertNormalAppendReads(metrics, unsupportedStat(path), Buffer.byteLength(suffix));
-    assert.equal(metrics.jsonLinesParsed, suffixLines().length * 2, 'verified append parses only the suffix');
+    assert.equal(metrics.jsonLinesParsed, lines.length * 2, 'verified append parses only the suffix');
     assert.deepEqual(dumpDb(dbSplit), dumpDb(dbFinal));
   });
 }

@@ -301,6 +301,9 @@ async function loadLiveSnapshot() {
   // full-load generation so a patch cannot invalidate cold-open layout work.
   const revision = loadRevision;
   const patchRequest = await fetchSessionDetailPatch(sessionId);
+  // Decode IPC and publish reactive rows in separate tasks. Yield here so the
+  // coordinator can also recheck scroll ownership before any visible commit.
+  await new Promise(resolve => setTimeout(resolve, 0));
   return { sessionId, revision, patchRequest };
 }
 

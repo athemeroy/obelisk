@@ -834,11 +834,14 @@ async function run() {
       after,
       unmounted, unmountState,
       restored: Boolean(document.querySelector('[data-view-key="tool:call-1"].open')),
+      restoreState: { scrollTop: wrap.scrollTop, mounted: Boolean(document.querySelector('[data-view-key="tool:call-1"]')),
+        current: document.querySelector('.msg-nav-current')?.textContent,
+        translate: document.querySelector('.virtual-timeline')?.style.translate },
     };
   })()`, true);
   assert(disclosure.after > disclosure.before, `expanded tool row remeasures from ${disclosure.before}px to ${disclosure.after}px`);
   assert(disclosure.unmounted, `the expanded tool row unmounts outside overscan (${JSON.stringify(disclosure.unmountState)})`);
-  assert(disclosure.restored, 'disclosure state survives unmount and remount');
+  assert(disclosure.restored, `disclosure state survives unmount and remount (${JSON.stringify(disclosure.restoreState)})`);
 
   const passiveScrollSettlement = await win.webContents.executeJavaScript(`new Promise(resolve => {
     const wrap = document.querySelector('.detail-wrap');

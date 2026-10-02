@@ -26,6 +26,7 @@ jobs:
     timeout-minutes: 45
     outputs:
       version: ${{ steps.version.outputs.version }}
+      artifact_ready: ${{ steps.ready.outputs.artifact_ready }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -55,11 +56,44 @@ jobs:
         working-directory: app
         run: npx --no-install electron-builder install-app-deps
       - name: Verify Electron regressions
+        id: electron-regressions
         run: xvfb-run -a npm --prefix app run test:electron:all
+      - name: Compare baseline after an Electron regression failure
+        if: ${{ !cancelled() && steps.electron-regressions.outcome == 'failure' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$BASE_SHA" ]]; then exit 0; fi
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          work=$(mktemp -d "$RUNNER_TEMP/obelisk-baseline.XXXXXX")
+          trap 'rm -rf "$work"' EXIT
+          git archive "$BASE_SHA" | tar -x -C "$work"
+          ln -s "$GITHUB_WORKSPACE/node_modules" "$work/node_modules"
+          ln -s "$GITHUB_WORKSPACE/app/node_modules" "$work/app/node_modules"
+          cp -R packages/core/dist "$work/packages/core/dist"
+          cp app/tests/electron-session-images.mjs "$work/app/tests/electron-session-images.mjs"
+          cp app/tests/electron-session-virtualization.mjs "$work/app/tests/electron-session-virtualization.mjs"
+          cd "$work/app"
+          npx --no-install electron-vite build
+          echo "Baseline product: $BASE_SHA; current fixture and identical Electron runtime"
+          for suite in electron-session-images electron-session-virtualization; do
+            if xvfb-run -a npx --no-install electron --no-sandbox "tests/$suite.mjs"; then
+              echo "Baseline $suite passed; investigate the feature regression."
+            else
+              echo "Baseline $suite failed too; retain the failed feature gate and compare diagnostics."
+            fi
+          done
       - name: Build amd64 Debian package
+        id: package
+        # Continue collecting package evidence after an unrelated renderer failure;
+        # the failed regression still fails this job and blocks publication.
+        if: ${{ !cancelled() && (success() || steps.electron-regressions.outcome == 'failure') }}
         # Host Node 22 builds; the shipped app uses Electron's embedded Node.
         run: npm --prefix app run dist:linux -- --x64 --publish never -c.linux.target=deb
       - name: Record artifact integrity
+        id: integrity
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         working-directory: app/release
         env:
           APP_VERSION: ${{ steps.version.outputs.version }}
@@ -75,6 +109,8 @@ jobs:
             size: bytes.length, sha512: createHash('sha512').update(bytes).digest('base64') })+'\n');
           NODE
       - uses: actions/upload-artifact@v4
+        id: artifact
+        if: ${{ !cancelled() && steps.integrity.outcome == 'success' }}
         with:
           name: linux-amd64
           path: |
@@ -83,7 +119,12 @@ jobs:
             app/release/debian-amd64.json
           if-no-files-found: error
 
+      - id: ready
+        if: ${{ !cancelled() && steps.artifact.outcome == 'success' }}
+        run: echo 'artifact_ready=true' >> "$GITHUB_OUTPUT"
+
   install:
+    if: ${{ !cancelled() && needs.build.outputs.artifact_ready == 'true' }}
     needs: build
     name: Install Debian package (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

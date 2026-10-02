@@ -741,14 +741,17 @@ async function run() {
     `document.querySelector('.flap-number')?.getAttribute('aria-label') === '${messageCount}'`,
     'the cold-start session snapshot',
   );
-  for (let attempt = 0; attempt < 100 && ipcReads.patches === 0; attempt++) {
-    await delay(10);
+  // The notification and patch cross IPC and the renderer's reload queue.
+  // Wait for that event with the same bounded deadline as the DOM probe.
+  const coldPatchDeadline = Date.now() + 8000;
+  while (ipcReads.patches === 0 && Date.now() < coldPatchDeadline) {
+    await delay(40);
   }
-  const coldOpenPatchReads = ipcReads.patches;
   await waitFor(win.webContents, `(() => {
     const timeline = document.querySelector('.virtual-timeline');
     return timeline && getComputedStyle(timeline).visibility === 'visible' && !document.querySelector('.first-open-loading');
   })()`, 'cold-open layout recovery');
+  const coldOpenPatchReads = ipcReads.patches;
   const coldOpenVisibility = await win.webContents.executeJavaScript(`(() => {
     const header = document.querySelector('.session-header');
     const timeline = document.querySelector('.virtual-timeline');

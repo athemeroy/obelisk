@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { Virtualizer } from '../app/node_modules/@tanstack/vue-virtual/dist/esm/index.js';
 import { createViewportRangeExtractor } from '../app/src/renderer/src/session-timeline-viewport.mjs';
 
 const sessionDetail = readFileSync(
@@ -103,6 +104,30 @@ test('timeline buffer covers the compensated reader position before scrollTop is
 
   assert.equal(indexes[0], 32);
   assert.equal(indexes.at(-1), 158);
+});
+
+test('a physical scroll ahead of virtual-core never retains the old offscreen prefix', () => {
+  const instance = new Virtualizer({
+    count: 2000,
+    getScrollElement: () => null,
+    estimateSize: () => 150,
+    initialRect: { width: 1200, height: 700 },
+    scrollToFn: () => {},
+    observeElementRect: () => {},
+    observeElementOffset: () => {},
+  });
+  const staleRange = instance.calculateRange();
+  assert.equal(staleRange.startIndex, 0);
+  // A physical/compositor scroll is visible to DOM reads before the library's
+  // offset observer has published its corresponding range.
+  const extract = createViewportRangeExtractor({
+    getScrollElement: () => ({ clientHeight: 700, scrollTop: 150000 }),
+    getVirtualizer: () => instance,
+  });
+  const indexes = extract({ ...staleRange, count: 2000, overscan: 6 });
+  assert.equal(indexes[0], 981, 'the old prefix is not retained');
+  assert.equal(indexes.at(-1), 1023, 'the real viewport keeps its full pixel buffer');
+  assert.equal(indexes.length, 43, 'a far jump mounts one bounded viewport window');
 });
 
 test('timeline count and disclosure classes come from renderer state rather than DOM state', () => {

@@ -66,8 +66,12 @@ export function createViewportRangeExtractor({
     );
     if (!first || !last) return defaultRangeExtractor(range);
 
-    const startIndex = Math.max(0, Math.min(first.index, range.startIndex));
-    const endIndex = Math.min(range.count - 1, Math.max(last.index, range.endIndex));
+    // The DOM offset can already have advanced while virtual-core still holds
+    // the previous range. Unioning that stale range with the physical viewport
+    // mounts the entire intervening transcript on a far jump. The pixel window
+    // itself covers the viewport, including suppressed scroll compensation.
+    const startIndex = Math.max(0, first.index);
+    const endIndex = Math.min(range.count - 1, last.index);
     return Array.from(
       { length: endIndex - startIndex + 1 },
       (_, offset) => startIndex + offset,

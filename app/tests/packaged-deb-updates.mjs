@@ -81,7 +81,9 @@ app.whenReady().then(() => fs.appendFile(${JSON.stringify(launches)}, JSON.strin
   const control = path.join(extracted, 'DEBIAN/control');
   await writeFile(control, (await readFile(control, 'utf8')).replace(/^Version: .*$/m, `Version: ${version}`));
   const deb = path.join(work, `Obelisk-${version}-linux-amd64.deb`);
-  run('dpkg-deb', ['--build', '--root-owner-group', extracted, deb]);
+  // Fast compression keeps disposable fixture creation bounded on small CI
+  // runners. The original release's xz package is installed unchanged first.
+  run('dpkg-deb', ['--build', '--root-owner-group', '-Zgzip', '-z1', extracted, deb]);
   await rm(extracted, { recursive: true, force: true });
   await rm(contents, { recursive: true, force: true });
   return deb;

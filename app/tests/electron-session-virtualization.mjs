@@ -332,11 +332,18 @@ async function traceWheelPaintContinuity(win, { updateTool = false } = {}) {
       previous: performance.now(),
       stop: false,
       wheels: 0,
+      wheelDistance: 0,
       updateVisibleAtWheel: null,
       maxVisibleOverlaps: 0,
       overlapExample: null,
     };
-    const recordWheel = () => { probe.wheels++; };
+    const recordWheel = event => {
+      probe.wheels++;
+      probe.wheelDistance += Math.abs(event.deltaY);
+      if (probe.wheels === 3 && ${JSON.stringify(updateTool)}) {
+        void window.obelisk.getSessionSummaries('wheel-bash-update-probe');
+      }
+    };
     const observer = new MutationObserver(() => {
       if (
         probe.updateVisibleAtWheel === null
@@ -345,35 +352,51 @@ async function traceWheelPaintContinuity(win, { updateTool = false } = {}) {
     });
     wrap?.addEventListener('wheel', recordWheel, { passive: true });
     if (tool) observer.observe(tool, { childList: true, characterData: true, subtree: true });
+    let deadline;
     probe.cleanup = () => {
+      clearTimeout(deadline);
       wrap?.removeEventListener('wheel', recordWheel);
       observer.disconnect();
     };
     window.__wheelFrameProbe = probe;
+    probe.finish = error => {
+      probe.error = error?.message || null;
+      probe.stop = true;
+      probe.after = wrap.scrollTop;
+      performance.mark(${JSON.stringify(endMark)});
+      probe.cleanup();
+    };
+    deadline = setTimeout(() => probe.finish(new Error('Continuous wheel probe timed out')), 8000);
     function frame(now) {
-      probe.gaps.push(now - probe.previous);
-      probe.previous = now;
-      const wrapRect = wrap.getBoundingClientRect();
-      const rows = [...document.querySelectorAll('.virtual-timeline-row')]
-        .map(row => ({
-          index: Number(row.dataset.index),
-          rect: row.getBoundingClientRect(),
-        }))
-        .filter(({ rect }) => rect.bottom > wrapRect.top && rect.top < wrapRect.bottom)
-        .sort((left, right) => left.index - right.index);
-      let overlaps = 0;
-      for (let index = 1; index < rows.length; index++) {
-        if (rows[index].rect.top < rows[index - 1].rect.bottom - 1) overlaps++;
-      }
-      if (overlaps > probe.maxVisibleOverlaps) {
-        probe.maxVisibleOverlaps = overlaps;
-        probe.overlapExample = rows.slice(0, 6).map(row => ({
-          index: row.index,
-          top: row.rect.top,
-          bottom: row.rect.bottom,
-        }));
-      }
-      if (!probe.stop) requestAnimationFrame(frame);
+      if (probe.stop) return;
+      try {
+        probe.gaps.push(now - probe.previous);
+        probe.previous = now;
+        const wrapRect = wrap.getBoundingClientRect();
+        const rows = [...document.querySelectorAll('.virtual-timeline-row')]
+          .map(row => ({
+            index: Number(row.dataset.index),
+            rect: row.getBoundingClientRect(),
+          }))
+          .filter(({ rect }) => rect.bottom > wrapRect.top && rect.top < wrapRect.bottom)
+          .sort((left, right) => left.index - right.index);
+        let overlaps = 0;
+        for (let index = 1; index < rows.length; index++) {
+          if (rows[index].rect.top < rows[index - 1].rect.bottom - 1) overlaps++;
+        }
+        if (overlaps > probe.maxVisibleOverlaps) {
+          probe.maxVisibleOverlaps = overlaps;
+          probe.overlapExample = rows.slice(0, 6).map(row => ({
+            index: row.index,
+            top: row.rect.top,
+            bottom: row.rect.bottom,
+          }));
+        }
+        // End on the frame following the complete input distance. Host-side
+        // timer/IPC latency must not extend this window into post-scroll work.
+        if (probe.wheelDistance >= 960 - 0.001) probe.finish();
+        else requestAnimationFrame(frame);
+      } catch (error) { probe.finish(error); }
     }
     requestAnimationFrame(frame);
   })()`, true);
@@ -385,39 +408,31 @@ async function traceWheelPaintContinuity(win, { updateTool = false } = {}) {
     `performance.mark(${JSON.stringify(startMark)})`,
     true,
   );
-  for (let index = 0; index < 8; index++) {
-    win.webContents.sendInputEvent({
-      type: 'mouseWheel',
-      x: 800,
-      y: 400,
-      deltaX: 0,
-      deltaY: -120,
-      canScroll: true,
-    });
-    if (updateTool && index === 2) {
-      // Production sends both notifications for one daemon build. The global
-      // catalogue invalidation must not reload 1000 sessions into the renderer
-      // while the current conversation owns the scroll gesture.
-      win.webContents.send('obelisk:index-updated', { affectedSessionIds: [sessionId] });
-      win.webContents.send('obelisk:session-updated', { sessionId });
-    }
-    await delay(45);
+  // Chromium owns the continuous gesture instead of eight main-process
+  // timers. Notify after the third real wheel event, while the gesture is live.
+  let gestureDeadline;
+  try {
+    await Promise.race([
+      win.webContents.debugger.sendCommand('Input.synthesizeScrollGesture', {
+        x: 800, y: 400, yDistance: -960, speed: 2400,
+        gestureSourceType: 'mouse', preventFling: true,
+      }),
+      new Promise((_, reject) => {
+        gestureDeadline = setTimeout(() => reject(new Error('Continuous wheel input timed out')), 8000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(gestureDeadline);
   }
-  // Stop inside the scrollend grace window. Any patch preparation or DOM
-  // mutation seen here competed with the physical wheel burst.
-  await delay(60);
-  const after = await win.webContents.executeJavaScript(
-    `document.querySelector('.detail-wrap')?.scrollTop || 0`,
-    true,
-  );
+  await waitFor(win.webContents, 'window.__wheelFrameProbe?.stop === true', 'final continuous wheel frame');
   const frameProbe = await win.webContents.executeJavaScript(`(() => {
-    performance.mark(${JSON.stringify(endMark)});
     const probe = window.__wheelFrameProbe;
-    probe.stop = true;
-    probe.cleanup();
+    if (probe.error) throw new Error(probe.error);
     delete window.__wheelFrameProbe;
     return {
       gaps: probe.gaps,
+      after: probe.after,
+      wheels: probe.wheels,
       updateVisibleAtWheel: probe.updateVisibleAtWheel,
       maxVisibleOverlaps: probe.maxVisibleOverlaps,
       overlapExample: probe.overlapExample,
@@ -430,7 +445,8 @@ async function traceWheelPaintContinuity(win, { updateTool = false } = {}) {
   const taskMetrics = rendererTaskMetrics(traceEvents, startMark, endMark);
   return {
     before,
-    after,
+    after: frameProbe.after,
+    wheels: frameProbe.wheels,
     screenshots: screenshots.length,
     minDeviation: Math.min(Infinity, ...deviations),
     maxFrameGap: Math.max(0, ...frameProbe.gaps),
@@ -575,6 +591,12 @@ function registerHandlers() {
   ipcMain.handle('db:getSessionSubagents', () => { ipcReads.subagents++; return []; });
   ipcMain.handle('db:getSessionWorkflows', () => { ipcReads.workflows++; return []; });
   ipcMain.handle('db:getSessionSummaries', (event, id) => {
+    if (id === 'wheel-bash-update-probe') {
+      // One daemon build invalidates the catalogue and the current session.
+      event.sender.send('obelisk:index-updated', { affectedSessionIds: [sessionId] });
+      event.sender.send('obelisk:session-updated', { sessionId });
+      return [];
+    }
     if (id === 'content-gesture-probe') {
       setTimeout(() => replaceMessageText({ webContents: event.sender }, scrollingContentUuid, scrollingContentText), 200);
       return [];
@@ -857,7 +879,8 @@ async function run() {
   const wheelPaint = await traceWheelPaintContinuity(win, { updateTool: true });
   stressGlobalCatalogue = false;
   assert(
-    Math.abs(wheelPaint.after - wheelPaint.before) > 500 && wheelPaint.screenshots >= 4,
+    Math.abs(wheelPaint.after - wheelPaint.before) > 500
+      && wheelPaint.wheels >= 8 && wheelPaint.screenshots >= 4,
     `wheel trace exercises compositor scrolling (${JSON.stringify(wheelPaint)})`,
   );
   assert(

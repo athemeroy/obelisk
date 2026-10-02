@@ -1644,6 +1644,9 @@ async function run() {
     `(() => { const wrap = document.querySelector('.detail-wrap'); return wrap.scrollHeight - wrap.clientHeight - wrap.scrollTop < 2; })()`,
     'tail re-entry settlement',
   );
+  // Enter the idle tail-follow scenario after navigation measurements and the
+  // preceding gesture have settled, rather than racing their final commit.
+  await waitForStationaryLayout(win);
   appendMessage(win, tailAppendIndex);
   await waitFor(
     win.webContents,

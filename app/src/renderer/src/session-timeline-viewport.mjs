@@ -270,23 +270,36 @@ export function useSessionTimelineViewport({
     suppressedAdjustment = 0;
   }
 
+  const pendingRowMeasurements = new Set();
+  let rowMeasurementPending = false;
+
   function measureElement(element) {
-    const instance = virtualizer.value;
-    if (!element) {
-      // Vue's null ref lets virtual-core unobserve and release detached rows.
+    if (element) pendingRowMeasurements.add(element);
+    if (rowMeasurementPending) return;
+    rowMeasurementPending = true;
+    // Vue clears refs before removing DOM and mounts each row before the rest
+    // of the patch is complete. Read every new height after the patch, then
+    // publish corrections together: no layout reads between DOM/scroll writes.
+    nextTick(() => {
+      rowMeasurementPending = false;
+      const instance = virtualizer.value;
+      const rows = [...pendingRowMeasurements]
+        .filter(row => row.isConnected)
+        .map(row => {
+          const index = instance.indexFromElement(row);
+          const key = instance.options.getItemKey(index);
+          const isNew = instance.elementsCache.get(key) !== row;
+          return { row, index, height: isNew ? row.offsetHeight : null };
+        });
+      pendingRowMeasurements.clear();
       instance.measureElement(null);
-      return;
-    }
-    const index = instance.indexFromElement(element);
-    const key = instance.options.getItemKey(index);
-    const isNewElement = instance.elementsCache.get(key) !== element;
-    instance.measureElement(element);
-    // virtual-core defers new row measurement while scrolling. A long row can
-    // already extend into the viewport before its ResizeObserver callback, so
-    // publish its actual height during mount before subsequent rows can paint.
-    if (isNewElement && instance.isScrolling) {
-      instance.resizeItem(index, Math.round(element.getBoundingClientRect().height));
-    }
+      for (const { row, index, height } of rows) {
+        // Seed the real height before registration. virtual-core otherwise
+        // skips first measurements during a gesture, exposing overlapping rows.
+        if (height !== null) instance.resizeItem(index, height);
+        instance.measureElement(row);
+      }
+    });
   }
 
   async function settleAfterUserScroll(commit = () => Promise.resolve()) {

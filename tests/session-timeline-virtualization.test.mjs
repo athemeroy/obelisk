@@ -143,10 +143,10 @@ test('live patch state advances only after the visible snapshot commit is accept
 
 // Vue sends a null ref on unmount. Exercise the real virtualizer's cleanup
 // through our wrapper rather than pinning a source-text null guard.
-test('unmounting virtual rows releases disconnected DOM references', async t => {
+test('virtual rows measure after the DOM patch and release disconnected references', async t => {
   const virtualModuleUrl = new URL('../app/node_modules/@tanstack/vue-virtual/dist/esm/index.js', import.meta.url);
   const virtualModule = await import(virtualModuleUrl.href);
-  const { effectScope, ref } = await import('../app/node_modules/vue/index.mjs');
+  const { effectScope, nextTick, ref } = await import('../app/node_modules/vue/index.mjs');
   let instance;
   const virtualMock = t.mock.module(virtualModuleUrl, {
     namedExports: {
@@ -163,15 +163,44 @@ test('unmounting virtual rows releases disconnected DOM references', async t => 
   const scope = effectScope();
   t.after(() => scope.stop());
   const viewport = scope.run(() => useSessionTimelineViewport({
-    items: ref([{ key: 'row-1', kind: 'message', message: { text: 'row' } }]),
+    items: ref([0, 1, 2].map(index => ({ key: `row-${index + 1}`, kind: 'message', message: { text: 'row' } }))),
     scrollElement: ref(null),
     timelineElement: ref(null),
     scrollMargin: ref(0),
   }));
-  const row = { isConnected: true, getAttribute: () => '0', offsetHeight: 120 };
-  viewport.measureElement(row);
-  assert.equal(instance.elementsCache.get('row-1'), row, 'the mounted row is registered');
-  row.isConnected = false;
+  instance.getMeasurements();
+  instance.isScrolling = true;
+  let heightReads = 0;
+  const rows = [0, 1, 2].map(index => ({
+    isConnected: true,
+    getAttribute: () => String(index),
+    get offsetHeight() { heightReads++; return 120 + index; },
+    getBoundingClientRect() { heightReads++; return { height: 120 + index }; },
+  }));
+  const resize = instance.resizeItem;
+  instance.resizeItem = (...args) => {
+    assert.equal(heightReads, 3, 'all new heights are read before any size correction');
+    return resize(...args);
+  };
+  for (const row of rows) viewport.measureElement(row);
+  assert.equal(heightReads, 0, 'mount refs do not force layout inside the DOM patch');
+  await nextTick();
+  for (const [index, row] of rows.entries()) {
+    assert.equal(instance.elementsCache.get(`row-${index + 1}`), row, 'the mounted row is registered');
+    assert.equal(instance.itemSizeCache.get(`row-${index + 1}`), 120 + index, 'actual heights are published before paint');
+  }
+  const row = rows[0];
+  const measure = instance.measureElement;
+  let cleanupPasses = 0;
+  instance.measureElement = element => {
+    if (!element) cleanupPasses++;
+    return measure(element);
+  };
+  // Vue calls the null ref before removing the host element.
   viewport.measureElement(null);
-  assert.equal(instance.elementsCache.size, 0, 'the unmounted row is no longer retained');
+  viewport.measureElement(null);
+  row.isConnected = false;
+  await nextTick();
+  assert.equal(instance.elementsCache.has('row-1'), false, 'the unmounted row is no longer retained');
+  assert.equal(cleanupPasses, 1, 'one Vue unmount batch performs one cache/observer cleanup pass');
 });

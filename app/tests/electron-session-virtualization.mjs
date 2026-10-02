@@ -1138,16 +1138,22 @@ async function run() {
     };
   })()`, true);
   await waitForStationaryLayout(win);
-  const restoredFocusVisible = await win.webContents.executeJavaScript(`(() => {
+  const restoredFocus = await win.webContents.executeJavaScript(`(() => {
     const target = document.querySelector('[data-uuid="${focusMessageUuid}"]');
     const row = target?.closest('.virtual-timeline-row');
     const wrap = document.querySelector('.detail-wrap');
-    if (!row || !wrap) return false;
+    if (!row || !wrap) return { visible: false, mounted: Boolean(row) };
     const rect = row.getBoundingClientRect();
     const viewport = wrap.getBoundingClientRect();
-    return rect.bottom > viewport.top && rect.top < viewport.bottom;
+    return {
+      visible: rect.bottom > viewport.top && rect.top < viewport.bottom,
+      scrollTop: wrap.scrollTop, rowTop: rect.top, rowBottom: rect.bottom,
+      viewportTop: viewport.top, viewportBottom: viewport.bottom,
+      translate: document.querySelector('.virtual-timeline')?.style.translate,
+      current: document.querySelector('.msg-nav-current')?.textContent,
+    };
   })()`, true);
-  assert(restoredFocusVisible, 'restored UUID navigation reveals the requested message after the preceding gesture settles');
+  assert(restoredFocus.visible, `restored UUID navigation reveals the requested message after the preceding gesture settles (${JSON.stringify(restoredFocus)})`);
   const stationaryAnchorBefore = await win.webContents.executeJavaScript(`(() => {
     const wrap = document.querySelector('.detail-wrap');
     const wrapRect = wrap.getBoundingClientRect();

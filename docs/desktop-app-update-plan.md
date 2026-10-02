@@ -2,15 +2,17 @@
 
 The implementation for [#209](https://github.com/tommy0103/obelisk/issues/209)
 follows [ADR-0015](adr/0015-desktop-sparkle-and-electron-updater.md). The initial
-scope is macOS arm64 and x64, with stable desktop releases hosted on GitHub.
+scope was macOS arm64 and x64. The Debian extension below adds Linux amd64
+`.deb` installs, with stable desktop releases hosted on GitHub.
 The CLI retains its independent npm lifecycle. No version tag or release is
 created as part of implementation verification.
 
 ## App behavior
 
-Packaged macOS apps automatically check and download without forcing a restart.
-Development builds and the initial Windows/Linux delivery disable updates.
-Sparkle schedules hourly checks; the fallback checks at startup and every
+Packaged macOS and Linux amd64 `.deb` apps automatically check and download
+without forcing a restart. Development builds, Windows, AppImage and other Linux
+architectures disable updates. Sparkle schedules hourly checks; electron-updater
+backends check at startup and every
 30 minutes. A manual check lives in Settings → About, alongside status, progress,
 last check time and retry errors. The sidebar notice offers View changes, Later,
 and Update & restart. Later keeps the validated download and its About action.

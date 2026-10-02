@@ -70,6 +70,13 @@ function createElectronUpdateBackend(receive: (event: UpdateEvent) => void,
     ['error', error => receive({ type: 'error', message: error.message || String(error) })],
   ];
   for (const [name, listener] of listeners) autoUpdater.on(name, listener);
-  return { kind: 'electron-updater', check: () => autoUpdater.checkForUpdates(), install: () => autoUpdater.quitAndInstall(false, true),
+  return { kind: 'electron-updater', check: async () => {
+    const result = await autoUpdater.checkForUpdates();
+    // Auto-download failures emit 'error' AND reject this separate promise.
+    // The event already publishes the real cause; consume the rejection so
+    // retries do not leave an unhandled background exception.
+    void result?.downloadPromise?.catch(() => {});
+    return result;
+  }, install: () => autoUpdater.quitAndInstall(false, true),
     stop: () => { for (const [name, listener] of listeners) autoUpdater.removeListener(name, listener); } };
 }

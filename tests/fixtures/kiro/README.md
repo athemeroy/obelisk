@@ -3,7 +3,7 @@
 These fixtures are reduced, sanitized captures from local Kiro CLI 2.27.1
 stores, read on 2026-10-06. No Kiro process was invoked to generate them.
 
-- `cli.json` / `cli.jsonl`: one complete user turn from
+- `cli.json` / `cli.jsonl`: one complete user turn in the flat CLI format from
   `~/.kiro/sessions/cli/<uuid>.json{,l}`. Metadata retains the v1 marker,
   subagent origin, model, and turn usage/message-id association. JSONL retains
   prompts, thinking, assistant text, toolUse, and toolResult blocks in order.
@@ -35,3 +35,8 @@ lists the corresponding macOS, Linux and Windows local-data directories.
 The macOS database path was also verified locally. The newer file layouts and
 field shapes above were verified against these local captures; Kiro does not
 publish a stable schema contract for them.
+
+The `v1` event marker is a serialization label, not proof of the V1 agent engine.
+These captures do not establish complete V1/V2/V3 engine coverage. In particular,
+the nested workspace capture contains no tool execution, child agent, compaction
+or tangent event. No separate engine session was launched during validation.

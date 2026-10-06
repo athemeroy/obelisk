@@ -44,7 +44,8 @@ Pi JSONL v1-v3 sessions are projected through the same provider contract. Pi's t
 
 ZCode stores its transcripts in one SQLite database (`~/.zcode/cli/db/db.sqlite`, WAL mode). Obelisk opens it read-only and indexes each session row as one Obelisk session; messages, tool calls, reasoning, compaction summaries, and subagent sessions flow into the shared tables. Rewind and compaction attest supersession the same way Pi branch state does: messages outside the retained range are stored as `inactive` and are only returned when you ask for `includeInactive: true`. Session identity combines the database path with the raw session ID, so a database recreated at the same path retracts stale snapshots instead of mixing histories; moving the database to a different root leaves the old sessions in place until a forced rebuild. ZCode's legacy script-workflow metadata is not indexed yet; workflow child sessions appear as ordinary sessions.
 
-Kiro reads CLI v1 `sessions/cli/<id>.json` metadata with its `.jsonl` transcript,
+Kiro reads flat CLI `sessions/cli/<id>.json` metadata with its `.jsonl` transcript
+(JSON event version `v1`),
 workspace `sessions/<hash>/sess_*/session.json` with `messages.jsonl` (schema
 1.0.0), and classic SQLite `conversations_v2` rows. Messages, thinking, CLI and
 classic tool calls/results, and reported token usage use the shared tables.
@@ -53,6 +54,12 @@ Subagent-origin CLI sessions without a parent id remain searchable standalone
 sessions with an explicit metadata card; Obelisk does not invent parent links.
 Workspace credit usage is not a token count. Workspace tool event layouts and
 cloud sessions are not covered by this adapter.
+The JSON event version `v1` and workspace schema `1.0.0` describe storage formats.
+Kiro's V1, V2 and V3 agent engines have separate version labels, and
+[V3 session data is incompatible with V2](https://kiro.dev/docs/cli/v3/).
+These captured stores were tested; complete V1/V2/V3 engine compatibility was
+not established. Workspace compaction, tangent and parent-child semantics are
+also not validated.
 
 Kiro defaults to `~/.kiro` plus the platform store at
 `~/Library/Application Support/kiro-cli/data.sqlite3` on macOS,

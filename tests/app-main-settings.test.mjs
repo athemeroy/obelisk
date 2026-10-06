@@ -10,6 +10,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { acquireWriterLease } from '../packages/core/src/writer-lease.ts';
+import { defaultKiroDatabasePath } from '../packages/core/src/providers/kiro.ts';
 import { defaultCopilotUserDataRoots } from '../packages/core/src/providers/copilot.ts';
 import { makeTempDir } from './temp-dirs.mjs';
 
@@ -145,6 +146,7 @@ function defaultIndexerWorkerClient() {
     createWorkerBuildIndex: () => ({
       buildIndex: async () => ({ files: 0, affectedSessionIds: [] }),
       readHermesMessageText: async () => null,
+      readKiroMessageText: async () => null,
       stop() {},
     }),
   };
@@ -342,6 +344,9 @@ test('main process watches every root declared by the built-in provider registry
       { kind: 'tree', path: join(home, '.hermes', 'profiles'), fileNames: ['state.db', 'state.db-wal'] },
       { kind: 'tree', path: join(home, '.kimi-code', 'sessions') },
       { kind: 'file', path: join(home, '.kimi-code', 'session_index.jsonl') },
+      { kind: 'tree', path: join(home, '.kiro', 'sessions') },
+      { kind: 'file', path: defaultKiroDatabasePath({ homeDir: home }) },
+      { kind: 'file', path: `${defaultKiroDatabasePath({ homeDir: home })}-wal` },
       { kind: 'tree', path: join(home, '.omp', 'agent', 'sessions') },
       { kind: 'tree', path: join(home, '.pi', 'agent', 'sessions') },
       { kind: 'file', path: join(home, '.zcode', 'cli', 'db', 'db.sqlite') },
@@ -618,6 +623,10 @@ test('usage IPC aggregates normalized tokens across all indexed providers', asyn
     .run('hermes:session', 'hermes', '/tmp/hermes/state.db#session:source');
   setup.prepare('INSERT INTO messages (uuid,session_id,type,role,text,source) VALUES (?,?,?,?,?,?)')
     .run('hermes:full-text', 'hermes:session', 'assistant', 'assistant', 'truncated Hermes text', 'hermes');
+  setup.prepare('INSERT INTO sessions (id,source,jsonl_path) VALUES (?,?,?)')
+    .run('kiro:session', 'kiro', '/workspace/kiro/sessions/cli/example.jsonl');
+  setup.prepare('INSERT INTO messages (uuid,session_id,type,role,text,source) VALUES (?,?,?,?,?,?)')
+    .run('kiro:full-text', 'kiro:session', 'assistant', 'assistant', 'truncated Kiro text', 'kiro');
   setup.prepare('INSERT INTO sessions (id,source) VALUES (?,?)')
     .run('zcode:child', 'zcode');
   setup.prepare('INSERT INTO messages (uuid,session_id,type,role,text,visibility,source,agent_id) VALUES (?,?,?,?,?,?,?,?)')
@@ -729,6 +738,12 @@ test('usage IPC aggregates normalized tokens across all indexed providers', asyn
           assert.equal(lookup.messageUuid, 'hermes:full-text');
           return 'complete Hermes text from worker';
         },
+        readKiroMessageText: async lookup => {
+          assert.equal(lookup.source, 'kiro');
+          assert.equal(lookup.messageUuid, 'kiro:full-text');
+          assert.equal(lookup.rootDir, join(home, '.kiro'));
+          return 'complete Kiro text from worker';
+        },
         stop() {},
       }),
     } }],
@@ -779,6 +794,8 @@ test('usage IPC aggregates normalized tokens across all indexed providers', asyn
       'complete ZCode text from worker');
     assert.equal(await ipcHandlers.get('db:getMessageFullText')(null, 'hermes:full-text'),
       'complete Hermes text from worker');
+    assert.equal(await ipcHandlers.get('db:getMessageFullText')(null, 'kiro:full-text'),
+      'complete Kiro text from worker');
 
     const claudeOnly = ipcHandlers.get('db:getUsageStats')(null, {});
     assert.equal(claudeOnly.totalTokens, 72);

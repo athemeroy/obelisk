@@ -333,12 +333,13 @@ function buildIndex({
       )(sourcePath, { readonly: true, fileMustExist: true, timeout: 500 });
       const registry = providerRegistry
         ?? (providerSettings === undefined
-          ? createBuiltinProviderRegistry(roots, { openCopilotChronicle, openHermesStore, openZcodeDatabase })
+          ? createBuiltinProviderRegistry(roots, { openCopilotChronicle, openHermesStore, openZcodeDatabase, openKiroDatabase: openHermesStore })
           : createConfiguredBuiltinProviderRuntime(providerSettings, {
             baseRoots: roots,
             openCopilotChronicle,
             openHermesStore,
             openZcodeDatabase,
+            openKiroDatabase: openHermesStore,
           }).registry);
       const providerPlan = createProviderIndexPlan(db, registry, {
         force,

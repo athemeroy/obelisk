@@ -106,6 +106,10 @@ function getRuntimePaths(persisted = loadPersistedSettings()) {
       fileMustExist: true,
       timeout: 500,
     }),
+    openKiroDatabase: sourcePath => new Database(sourcePath, {
+      readonly: true,
+      fileMustExist: true,
+    }),
   });
   const providerRoots = runtime.roots;
   const providerRegistry = runtime.registry;
@@ -805,11 +809,13 @@ ipcMain.handle('db:getMessageFullText', async (_, uuid) => {
     workflowAgent,
   };
   // Store-backed source reads belong in the worker: a custom root can live on a slow mount.
-  if (lookup.source === 'zcode' || lookup.source === 'hermes') {
+  if (lookup.source === 'zcode' || lookup.source === 'hermes' || lookup.source === 'kiro') {
     try {
       const messageText = lookup.source === 'zcode'
         ? await indexerWorker?.readZcodeMessageText(lookup)
-        : await indexerWorker?.readHermesMessageText(lookup);
+        : lookup.source === 'kiro'
+          ? await indexerWorker?.readKiroMessageText({ ...lookup, rootDir: paths.providerRoots.kiro })
+          : await indexerWorker?.readHermesMessageText(lookup);
       return messageText ?? msg.text ?? null;
     } catch {
       return msg.text ?? null;

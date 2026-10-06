@@ -1,11 +1,8 @@
 // Copyright (C) 2026 tommy0103 and contributors.
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Kiro has three local stores: CLI v1 JSONL with adjacent metadata, workspace
-// session directories, and the classic conversations_v2 SQLite store. Each unit
-// replaces one complete session. Identity is (normalized cwd, native id), so
-// copies and migrations deduplicate without collapsing project-local ids.
-// Source connections are read-only; no migrations or write pragmas are run.
+// V1: conversations_v2; V2: flat JSONL; V3: workspace JSONL + sub-executions.
+// Each unit replaces one session identified by (normalized cwd, native id).
 
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -47,7 +44,7 @@ interface KiroUnitMeta {
 interface ProjectedMessage {
   role: string;
   text: string | null;
-  contentType: string;
+  contentType?: 'thinking';
   timestamp: string | null;
   model?: string | null;
   input?: number | null;
@@ -155,34 +152,24 @@ function filePaths(path: string, metadataPath: string, format: 'cli' | 'workspac
     : [path, metadataPath, join(dirname(path), 'sub-executions'), ...childPaths(path)];
 }
 
-function readJson(path: string): JsonRecord {
-  const value: unknown = JSON.parse(readFileSync(path, 'utf8'));
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`Kiro metadata is not an object: ${path}`);
-  }
-  return value as JsonRecord;
-}
-
-function readJsonl(path: string): JsonRecord[] {
-  let text: string;
-  try { text = readFileSync(path, 'utf8'); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-    throw error;
-  }
-  const lines = text.split(/\r?\n/);
+function readJsonl(path: string, firstOnly = false): JsonRecord[] {
   const records: JsonRecord[] = [];
-  for (const [index, line] of lines.entries()) {
-    if (!line.trim()) continue;
-    try {
-      const value: unknown = JSON.parse(line);
-      if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('Expected object');
-      records.push(value as JsonRecord);
-    } catch (error) {
-      // A live writer may not have finished the last line yet. Completed corrupt
-      // lines fail the unit, preserving the previous snapshot and cursor.
-      if (index === lines.length - 1) break;
-      throw new Error(`Invalid Kiro JSONL at ${path}:${index + 1}`, { cause: error });
-    }
+  try {
+    readLines(path, (line, terminated) => {
+      if (!line.trim()) return;
+      try {
+        const value: unknown = JSON.parse(line);
+        if (!firstOnly && (value === null || typeof value !== 'object' || Array.isArray(value))) throw new Error('Expected object');
+        records.push(object(value));
+      } catch (error) {
+        // Discovery only checks the version. Parse rejects completed corrupt
+        // lines, but tolerates an unfinished tail from a live writer.
+        if (terminated && !firstOnly) throw new Error(`Invalid Kiro JSONL at ${path}`, { cause: error });
+      }
+      if (firstOnly) return false;
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
   return records;
 }
@@ -216,23 +203,14 @@ function discoverAt(root: string, dbPath: string, ctx: DiscoverContext, openData
   const addFile = (path: string, metadataPath: string, format: 'cli' | 'workspace') => {
     try {
       const before = signature(filePaths(path, metadataPath, format));
-      const header = readJson(metadataPath);
+      const header = object(JSON.parse(readFileSync(metadataPath, 'utf8')));
       const rawId = str(format === 'cli' ? header.session_id : header.id);
       if (rawId === null) throw new Error('Kiro session id is missing');
       if (format === 'cli' && header.session_state?.version !== 'v1') {
         throw new Error(`Unsupported Kiro CLI schema ${String(header.session_state?.version)}`);
       }
       if (format === 'cli') {
-        let first: JsonRecord | undefined;
-        try {
-          readLines(path, line => {
-            if (!line.trim()) return;
-            try { first = object(JSON.parse(line)); } catch { /* Parse reports corrupt lines. */ }
-            return false;
-          });
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-        }
+        const first = readJsonl(path, true)[0];
         if (first !== undefined && first.version !== 'v1') throw new Error(`Unsupported Kiro CLI event version ${String(first.version)}`);
       }
       if (format === 'workspace' && header.schemaVersion !== '1.0.0') {
@@ -344,7 +322,7 @@ function cliMessages(source: KiroSource): ProjectedMessage[] {
   if (reason === 'subagent') {
     // These headers attest child origin but carry no parent id. Keep them as
     // searchable standalone sessions, with an explicit metadata card.
-    out.push({ role: 'system', text: 'Session created by a Kiro subagent', contentType: 'text', timestamp, meta: true, raw: { session_created_reason: reason } });
+    out.push({ role: 'system', text: 'Session created by a Kiro subagent', timestamp, meta: true, raw: { session_created_reason: reason } });
   }
   for (const event of readJsonl(source.path)) {
     if (event.version !== 'v1') throw new Error(`Unsupported Kiro CLI event version ${String(event.version)}`);
@@ -357,16 +335,16 @@ function cliMessages(source: KiroSource): ProjectedMessage[] {
       const block = object(part);
       const value = object(block.data);
       const base = { role, timestamp, model, raw: event };
-      if (block.kind === 'text' && typeof block.data === 'string') out.push({ ...base, text: block.data, contentType: 'text' });
+      if (block.kind === 'text' && typeof block.data === 'string') out.push({ ...base, text: block.data });
       else if (block.kind === 'thinking') out.push({ ...base, text: str(value.text), contentType: 'thinking', model: str(value.modelId) ?? model });
       else if (block.kind === 'toolUse' && str(value.toolUseId) !== null && str(value.name) !== null) {
-        out.push({ ...base, text: null, contentType: 'tool_use', call: { id: value.toolUseId, name: value.name, input: value.input } });
+        out.push({ ...base, text: null, call: { id: value.toolUseId, name: value.name, input: value.input } });
       } else if (block.kind === 'toolResult' && str(value.toolUseId) !== null) {
-        out.push({ ...base, text: resultText(value.content) || null, contentType: 'tool_result',
+        out.push({ ...base, text: resultText(value.content) || null,
           result: { id: value.toolUseId, content: resultText(value.content), error: value.status !== 'success' } });
-      } else out.push({ ...base, text: null, contentType: 'unknown' });
+      } else out.push({ ...base, text: null });
     }
-    if (out.length === start) out.push({ role, timestamp, model, text: null, contentType: 'unknown', raw: event });
+    if (out.length === start) out.push({ role, timestamp, model, text: null, raw: event });
     if (typeof data.message_id === 'string') byRawId.set(data.message_id, out.at(-1)!);
   }
   // Usage is per user turn, not per assistant block. Attach it once, to the
@@ -378,7 +356,7 @@ function cliMessages(source: KiroSource): ProjectedMessage[] {
     const tokens = usage(object(turn), true);
     if (owner === undefined) {
       if (tokens.input === null && tokens.output === null) continue;
-      owner = { role: 'assistant', text: null, contentType: 'unknown', timestamp: time(turn.end_timestamp), model, raw: turn };
+      owner = { role: 'assistant', text: null, timestamp: time(turn.end_timestamp), model, raw: turn };
       out.push(owner);
     }
     owner.input = tokens.input;
@@ -394,7 +372,7 @@ function workspaceMessages(source: KiroSource): ProjectedMessage[] {
   const children = new Map<string, ProjectedMessage>();
   const completions: JsonRecord[] = [];
   if (str(source.header.parentSessionId)) {
-    out.push({ role: 'system', text: `Forked from Kiro session ${source.header.parentSessionId}`, contentType: 'text',
+    out.push({ role: 'system', text: `Forked from Kiro session ${source.header.parentSessionId}`,
       timestamp: time(source.header.createdAt), meta: true,
       raw: { parentSessionId: source.header.parentSessionId, forkedAtMessageId: source.header.forkedAtMessageId, createdReason: source.header.createdReason } });
   }
@@ -403,42 +381,37 @@ function workspaceMessages(source: KiroSource): ProjectedMessage[] {
     const timestamp = time(event.timestamp);
     const base = { timestamp, model: str(source.header.modelId), raw: event, agent,
       execution: str(payload.executionId) ?? undefined };
-    if (['user', 'assistant', 'agent_note', 'session_start'].includes(payload.type)) {
+    if (['user', 'assistant', 'agent_note', 'session_start', 'usage_summary'].includes(payload.type)) {
       const role = payload.type === 'user' ? 'user' : payload.type === 'assistant' ? 'assistant' : 'system';
       const text = str(payload.content);
-      out.push({ ...base, role, text, contentType: payload.operationType === 'Reasoning' ? 'thinking' : text === null ? 'unknown' : 'text',
+      out.push({ ...base, role, text, contentType: payload.operationType === 'Reasoning' ? 'thinking' : undefined,
         model: str(payload.reasoningModelId) ?? base.model, meta: role === 'system', summary: ['Summary', 'PrintSummary'].includes(payload.operationType) });
     } else if (payload.type === 'tool_call' && str(payload.toolCallId) && str(payload.toolName)) {
-      out.push({ ...base, role: 'assistant', text: null, contentType: 'tool_use',
+      out.push({ ...base, role: 'assistant', text: null,
         call: { id: payload.toolCallId, name: payload.toolName, input: payload.args } });
     } else if (payload.type === 'tool_result' && str(payload.toolCallId)) {
       const text = resultText(payload.content);
-      out.push({ ...base, role: 'user', text: text || null, contentType: 'tool_result',
+      out.push({ ...base, role: 'user', text: text || null,
         result: { id: payload.toolCallId, content: text, error: payload.success === false } });
     } else if (payload.type === 'sub_agent_start' && str(payload.subSessionId)) {
-      const message: ProjectedMessage = { ...base, role: 'system', text: str(payload.prompt) ?? str(payload.explanation), contentType: 'text', meta: true,
+      const message: ProjectedMessage = { ...base, role: 'system', text: str(payload.prompt) ?? str(payload.explanation), meta: true,
         execution: str(payload.parentExecutionId) ?? undefined,
         subagent: { id: payload.subSessionId, name: str(payload.subAgentName), description: str(payload.prompt) ?? str(payload.explanation), duration: null, parentCall: null } };
       out.push(message);
       children.set(payload.subSessionId, message);
     } else if (payload.type === 'sub_agent_complete') {
       completions.push(event);
-    } else if (payload.type === 'usage_summary') {
-      // These summaries report credits, not tokens. Retain the native record
-      // for raw lookup without fabricating token totals or duplicating text.
-      out.push({ ...base, role: 'system', text: null, contentType: 'unknown', meta: true });
     } else if (['tool_call', 'tool_result'].includes(payload.type)) {
-      out.push({ ...base, role: payload.type === 'tool_call' ? 'assistant' : 'user', text: null, contentType: 'unknown' });
+      out.push({ ...base, role: payload.type === 'tool_call' ? 'assistant' : 'user', text: null });
     }
   };
   for (const event of events) append(event);
   for (const path of childPaths(source.path)) {
     const nativeId = basename(path, '.jsonl');
-    const start = children.get(nativeId);
     // Interrupted executions may have persisted a child file before its start
     // marker. Keep those messages and attest only the id in the native filename.
-    if (start === undefined) {
-      const message: ProjectedMessage = { role: 'system', text: null, contentType: 'unknown', timestamp: null, meta: true,
+    if (!children.has(nativeId)) {
+      const message: ProjectedMessage = { role: 'system', text: null, timestamp: null, meta: true,
         subagent: { id: nativeId, name: null, description: null, duration: null, parentCall: null }, raw: { subSessionId: nativeId } };
       out.push(message);
       children.set(nativeId, message);
@@ -448,12 +421,12 @@ function workspaceMessages(source: KiroSource): ProjectedMessage[] {
   for (const event of completions) {
     const payload = object(event.payload);
     const child = children.get(payload.subSessionId);
-    if (payload.type === 'sub_agent_complete' && child !== undefined) {
-      const end = time(event.timestamp);
-      if (end !== null && child.timestamp !== null) child.subagent!.duration = Math.max(0, Date.parse(end) - Date.parse(child.timestamp));
-      out.push({ role: 'assistant', text: str(payload.response), contentType: str(payload.response) === null ? 'unknown' : 'text',
-        timestamp: end, model: str(source.header.modelId), agent: payload.subSessionId, raw: event });
-    }
+    if (child === undefined) continue;
+    const end = time(event.timestamp);
+    if (end !== null && child.timestamp !== null) child.subagent!.duration = Math.max(0, Date.parse(end) - Date.parse(child.timestamp));
+    const text = str(payload.response);
+    out.push({ role: 'assistant', text,
+      timestamp: end, model: str(source.header.modelId), agent: payload.subSessionId, raw: event });
   }
   for (const child of children.values()) {
     // Native V3 starts the child before emitting its orchestration tool call.
@@ -486,16 +459,16 @@ function sqliteMessages(source: KiroSource, openDatabase: KiroDatabaseOpener): P
     if (content.Prompt !== undefined || content.CancelledToolUses !== undefined) {
       const prompt = object(content.Prompt ?? content.CancelledToolUses);
       const text = str(prompt.prompt);
-      out.push({ role: 'user', text, contentType: text === null ? 'unknown' : 'text', timestamp, raw });
+      out.push({ role: 'user', text, timestamp, raw });
     }
     const results = content.ToolUseResults?.tool_use_results ?? content.CancelledToolUses?.tool_use_results;
     for (const result of Array.isArray(results) ? results : []) {
       if (str(result.tool_use_id) === null) continue;
       const text = resultText(result.content);
-      out.push({ role: 'user', text: text || null, contentType: 'tool_result', timestamp, raw,
+      out.push({ role: 'user', text: text || null, timestamp, raw,
         result: { id: result.tool_use_id, content: text, error: result.status !== 'Success' } });
     }
-    if (Object.keys(content).length === 0) out.push({ role: 'user', text: null, contentType: 'unknown', timestamp, raw });
+    if (Object.keys(content).length === 0) out.push({ role: 'user', text: null, timestamp, raw });
   };
   for (const turn of conversation.history) {
     const metadata = object(turn.request_metadata);
@@ -503,29 +476,34 @@ function sqliteMessages(source: KiroSource, openDatabase: KiroDatabaseOpener): P
     timestamp = time(metadata.stream_end_timestamp_ms) ?? timestamp;
     const assistant = object(turn.assistant?.Response ?? turn.assistant?.ToolUse);
     const model = str(metadata.model_id) ?? str(conversation.model_info?.model_id);
+    const base = { role: 'assistant', timestamp, model, raw: turn };
     const start = out.length;
-    if (str(assistant.thinking?.text) !== null) out.push({ role: 'assistant', text: assistant.thinking.text, contentType: 'thinking', timestamp, model, raw: turn });
-    if (str(assistant.content) !== null) out.push({ role: 'assistant', text: assistant.content, contentType: 'text', timestamp, model, raw: turn });
+    if (str(assistant.thinking?.text) !== null) out.push({ ...base, text: assistant.thinking.text, contentType: 'thinking' });
+    if (str(assistant.content) !== null) out.push({ ...base, text: assistant.content });
     for (const tool of Array.isArray(assistant.tool_uses) ? assistant.tool_uses : []) {
       if (str(tool.id) === null || str(tool.name) === null) continue;
-      out.push({ role: 'assistant', text: null, contentType: 'tool_use', timestamp, model, raw: turn,
+      out.push({ ...base, text: null,
         call: { id: tool.id, name: tool.name, input: tool.args } });
     }
-    if (out.length === start) out.push({ role: 'assistant', text: null, contentType: 'unknown', timestamp, model, raw: turn });
-    const tokens = usage(metadata);
-    out.at(-1)!.input = tokens.input;
-    out.at(-1)!.output = tokens.output;
+    if (out.length === start) out.push({ ...base, text: null });
+    Object.assign(out.at(-1)!, usage(metadata));
   }
   // An interrupted prompt/result can be saved outside the paired history.
   if (conversation.next_message !== null && conversation.next_message !== undefined) userMessage(object(conversation.next_message), conversation.next_message);
   return out;
 }
 
-function project(source: KiroSource, openDatabase: KiroDatabaseOpener): ProjectedMessage[] {
-  if (sourceSignature(source).signature !== source.signature) throw new Error('Kiro source changed after discovery');
+function project(sources: KiroSource[], openDatabase: KiroDatabaseOpener): ProjectedMessage[] {
+  const check = () => {
+    for (const source of sources) {
+      if (sourceSignature(source).signature !== source.signature) throw new Error('Kiro source changed after discovery');
+    }
+  };
+  check();
+  const source = sources[0]!;
   const messages = source.format === 'cli' ? cliMessages(source)
     : source.format === 'workspace' ? workspaceMessages(source) : sqliteMessages(source, openDatabase);
-  if (sourceSignature(source).signature !== source.signature) throw new Error('Kiro source changed while indexing');
+  check();
   return messages;
 }
 
@@ -544,7 +522,7 @@ function recordsFor(source: KiroSource, sessionId: string, messages: ProjectedMe
     }
     records.push({ kind: 'message', uuid, session_id: sessionId, type: message.role, parent_uuid: previous.get(scope) ?? null,
       timestamp: message.timestamp, role: message.role, text: message.text === null ? null : trunc(message.text),
-      content_type: message.contentType, is_meta: message.meta ? 1 : 0, visibility: 'visible', model: message.model ?? null,
+      content_type: message.contentType ?? (message.call ? 'tool_use' : message.result ? 'tool_result' : message.text === null ? 'unknown' : 'text'), is_meta: message.meta ? 1 : 0, visibility: 'visible', model: message.model ?? null,
       is_sidechain: message.agent ? 1 : 0, agent_id: message.agent ? `${sessionId}:subagent:${message.agent}` : null, input_tokens: message.input ?? null, output_tokens: message.output ?? null,
       cwd: source.cwd, skill: null, source: name } satisfies MessageRecord);
     previous.set(scope, uuid);
@@ -566,7 +544,7 @@ function recordsFor(source: KiroSource, sessionId: string, messages: ProjectedMe
   }
   const header = source.header;
   records.push({ kind: 'session', id: sessionId,
-    title: str(header.title) ?? messages.find(message => message.role === 'user' && message.contentType === 'text')?.text?.slice(0, 200) ?? null,
+    title: str(header.title) ?? messages.find(message => message.role === 'user' && !message.contentType && !message.result && message.text !== null)?.text?.slice(0, 200) ?? null,
     project: projectSlugFromPath(source.cwd), started_at: time(header.created_at ?? header.createdAt),
     ended_at: time(header.updated_at ?? header.lastModifiedAt) ?? messages.at(-1)?.timestamp ?? null,
     git_branch: null, version: source.format === 'workspace' ? `workspace-${header.schemaVersion}` : source.format === 'cli' ? 'cli-v1' : 'conversations-v2',
@@ -604,12 +582,7 @@ export function createKiroProvider({
         return meta.cursor;
       }
       const source = meta.sources[0]!;
-      const messages = project(source, openDatabase);
-      // All copies participate in discovery's authority decision.
-      for (const member of meta.sources) {
-        if (sourceSignature(member).signature !== member.signature) throw new Error('Kiro source copy changed while indexing');
-      }
-      yield* recordsFor(source, unit.sessionId, messages);
+      yield* recordsFor(source, unit.sessionId, project(meta.sources, openDatabase));
       return meta.cursor;
     },
     raw(input: RawLookup): RawRecord | null {
@@ -624,7 +597,7 @@ export function createKiroProvider({
         if (!input.messageUuid.startsWith(prefix)) return null;
         const ordinal = input.messageUuid.slice(prefix.length);
         if (!/^\d{6,}$/.test(ordinal)) return null;
-        const message = project(meta.sources[0]!, openDatabase)[Number(ordinal)];
+        const message = project(meta.sources, openDatabase)[Number(ordinal)];
         if (message === undefined) return null;
         const text = JSON.stringify(message.raw);
         return { text, totalLength: text.length, hasMore: false, messageText: message.text };

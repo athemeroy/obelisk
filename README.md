@@ -44,45 +44,21 @@ Pi JSONL v1-v3 sessions are projected through the same provider contract. Pi's t
 
 ZCode stores its transcripts in one SQLite database (`~/.zcode/cli/db/db.sqlite`, WAL mode). Obelisk opens it read-only and indexes each session row as one Obelisk session; messages, tool calls, reasoning, compaction summaries, and subagent sessions flow into the shared tables. Rewind and compaction attest supersession the same way Pi branch state does: messages outside the retained range are stored as `inactive` and are only returned when you ask for `includeInactive: true`. Session identity combines the database path with the raw session ID, so a database recreated at the same path retracts stale snapshots instead of mixing histories; moving the database to a different root leaves the old sessions in place until a forced rebuild. ZCode's legacy script-workflow metadata is not indexed yet; workflow child sessions appear as ordinary sessions.
 
-Kiro reads flat CLI `sessions/cli/<id>.json` metadata with its `.jsonl` transcript
-(JSON event version `v1`),
-workspace `sessions/<hash>/sess_*/session.json` with `messages.jsonl` (schema
-1.0.0), and classic SQLite `conversations_v2` rows. These layouts were exercised
-with the V2, V3 and V1 engines respectively in Kiro CLI 2.27.1. Messages,
-thinking, tool calls/results, and reported token usage use the shared tables.
-The `.history` files are line-editor input history, so they are not indexed.
-Subagent-origin CLI sessions without a parent id remain searchable standalone
-sessions with an explicit metadata card; Obelisk does not invent parent links.
-V3 `sub-executions/*.jsonl` transcripts use the shared subagent tables. Native
-delegation prompts and roles link them to an unambiguous orchestration call.
-V3 compaction summaries use the shared summary table; retained physical history
-remains searchable. Tangents appear as separate sessions with a metadata card
-identifying their native parent. Workspace credit usage is not a token count.
-Cloud sessions are not covered by this adapter.
-The JSON event version `v1` and workspace schema `1.0.0` describe storage formats.
-Kiro's V1, V2 and V3 agent engines have separate version labels, and
-[V3 session data is incompatible with V2](https://kiro.dev/docs/cli/v3/).
-Sanitized captures and separate native engine sessions verify these local
-formats, including V3 tools, child agents, compaction and tangents.
+Kiro CLI V1/V2/V3 history is supported using the formats captured from 2.27.1:
+V1's SQLite `conversations_v2`, V2's `sessions/cli/<id>.json{,l}` (event version
+`v1`), and V3's `sessions/<hash>/sess_*/{session.json,messages.jsonl}` (schema
+`1.0.0`). Messages, thinking, tools, reported tokens, V3 subagent transcripts and
+compaction summaries use the shared tables. Tangents remain separate sessions
+with their native parent noted. Credits are not converted to tokens; line-editor
+`.history` files and cloud sessions are excluded. Copies sharing a native id and
+normalized cwd use the newest snapshot. Retained physical history stays searchable.
 
-Kiro defaults to `~/.kiro` plus the platform store at
+The default root is `~/.kiro`. SQLite is opened read-only at
 `~/Library/Application Support/kiro-cli/data.sqlite3` on macOS,
-`$XDG_DATA_HOME/kiro-cli/data.sqlite3` (default `~/.local/share`) on Linux, and
-`%LOCALAPPDATA%\kiro-cli\data.sqlite3` on Windows. The store is opened read-only.
-Set `providerRoots.kiro` in `~/.obelisk/settings.json` to an absolute Kiro root
-containing `sessions/`; custom roots read only their own `data.sqlite3`, rather
-than also scanning the platform store. Exported stores can use this layout:
-
-```json
-{ "providerRoots": { "kiro": "/path/to/kiro-root" } }
-```
-
-Session identity combines the normalized cwd and native id. Copies across the
-three stores become one session, using the most recently updated snapshot;
-file transcripts win timestamp ties. A copied id in another project remains
-separate. Snapshot cursors include metadata and transcript mtime, ctime, size,
-and inode (plus the store WAL). Changed stores replay their sessions in full.
-Unknown metadata schemas are reported as incomplete inventory and skipped.
+`$XDG_DATA_HOME/kiro-cli/data.sqlite3` (default `~/.local/share`) on Linux, or
+`%LOCALAPPDATA%\kiro-cli\data.sqlite3` on Windows. Set `providerRoots.kiro` to an
+export root containing `sessions/` and optional `data.sqlite3`; custom roots
+exclude the platform store. Unknown schemas are reported and skipped.
 
 | Provider | Superseded-history support |
 | --- | --- |

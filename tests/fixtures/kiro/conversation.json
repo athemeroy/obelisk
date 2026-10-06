@@ -21,16 +21,7 @@
               {
                 "id": "id-48",
                 "name": "example_tool",
-                "orig_name": "example_tool",
                 "args": {
-                  "operations": [
-                    {
-                      "mode": "Example content",
-                      "path": "Example content"
-                    }
-                  ]
-                },
-                "orig_args": {
                   "operations": [
                     {
                       "mode": "Example content",
@@ -43,7 +34,6 @@
           }
         },
         "request_metadata": {
-          "request_start_timestamp_ms": 1767268800000,
           "stream_end_timestamp_ms": 1767268800000,
           "model_id": "example-model",
           "uncached_input_tokens": null,
@@ -79,13 +69,7 @@
               {
                 "id": "id-50",
                 "name": "example_tool",
-                "orig_name": "example_tool",
                 "args": {
-                  "command": "Example content",
-                  "path": "Example content",
-                  "file_text": "Example content"
-                },
-                "orig_args": {
                   "command": "Example content",
                   "path": "Example content",
                   "file_text": "Example content"
@@ -95,7 +79,6 @@
           }
         },
         "request_metadata": {
-          "request_start_timestamp_ms": 1767268800000,
           "stream_end_timestamp_ms": 1767268800000,
           "model_id": "example-model",
           "uncached_input_tokens": null,
@@ -131,7 +114,6 @@
           }
         },
         "request_metadata": {
-          "request_start_timestamp_ms": 1767268800000,
           "stream_end_timestamp_ms": 1767268800000,
           "model_id": "example-model",
           "uncached_input_tokens": null,

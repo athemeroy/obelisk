@@ -1,7 +1,9 @@
 # Kiro 2.27.1 captures
 
 These fixtures are reduced, sanitized captures from local Kiro CLI 2.27.1
-stores, read on 2026-10-06. No Kiro process was invoked to generate them.
+stores, read on 2026-10-06. The original top-level fixtures came from existing
+history; the `v3/` fixtures came from an explicit `--agent-engine v3` smoke test
+using a disposable HOME and database copy. Source stores were opened read-only.
 
 - `cli.json` / `cli.jsonl`: one complete user turn in the flat CLI format from
   `~/.kiro/sessions/cli/<uuid>.json{,l}`. Metadata retains the v1 marker,
@@ -16,6 +18,15 @@ stores, read on 2026-10-06. No Kiro process was invoked to generate them.
   store. `value` is represented as JSON here; tests serialize it into the exact
   TEXT column of a temporary SQLite database. The conversation includes tools
   and results. Context, environment, and tool registry fields were removed.
+- `v3/session.json`, `v3/messages.jsonl`, `v3/sub-executions/*.jsonl`: native V3
+  file reads, shell execution, a one-stage `orchestrate_subagent`, child messages,
+  Say/Reasoning operations, and credit usage. Tool-call and execution identities
+  remain consistent across the parent and child captures. The child start event
+  precedes the parent's orchestration tool call, as it does in native output.
+- `v3/compaction.jsonl`: the native assistant `Summary` event produced by the
+  TUI `/compact` command. Context-only tombstones are not session deletion evidence.
+- `v3/tangent/`: a separate native tangent session created with `/tangent smoke`,
+  retaining `parentSessionId`, `forkedAtMessageId`, and `createdReason: tangent`.
 
 All text, titles, paths, command arguments, signatures, timestamps, and ids
 were replaced. Shared native ids remain shared after replacement. Numeric
@@ -37,6 +48,6 @@ field shapes above were verified against these local captures; Kiro does not
 publish a stable schema contract for them.
 
 The `v1` event marker is a serialization label, not proof of the V1 agent engine.
-These captures do not establish complete V1/V2/V3 engine coverage. In particular,
-the nested workspace capture contains no tool execution, child agent, compaction
-or tangent event. No separate engine session was launched during validation.
+Separate native engine checks establish the layout mapping for this release:
+V1 writes `conversations_v2`, V2 writes flat CLI JSONL, and V3 writes nested
+workspace JSONL. Engine numbers are independent of the event/schema labels.

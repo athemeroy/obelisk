@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { join, normalize, win32 } from 'node:path';
+import { basename, dirname, join, normalize, win32 } from 'node:path';
 
 import { normalizeObservedCwd, projectSlugFromPath, readLines, trunc, truncJson } from '../parsing.ts';
 import type { SqliteDb, SqliteRow } from '../sqlite-types.ts';
@@ -21,7 +21,7 @@ import type {
 } from './types.ts';
 
 export const name = 'kiro';
-export const KIRO_CANONICAL_TRANSCRIPT_MARKER = '__kiro_canonical_transcript_v1__';
+export const KIRO_CANONICAL_TRANSCRIPT_MARKER = '__kiro_canonical_transcript_v2__';
 export type KiroDatabaseOpener = (path: string) => SqliteDb;
 type JsonRecord = Record<string, any>;
 type Format = 'cli' | 'workspace' | 'sqlite';
@@ -53,6 +53,10 @@ interface ProjectedMessage {
   input?: number | null;
   output?: number | null;
   meta?: boolean;
+  agent?: string;
+  execution?: string;
+  summary?: boolean;
+  subagent?: { id: string; name: string | null; description: string | null; duration: number | null; parentCall: number | null };
   call?: { id: string; name: string; input: unknown };
   result?: { id: string; content: string; error: boolean };
   raw: unknown;
@@ -130,7 +134,25 @@ function signature(paths: readonly string[]): { signature: string; mtime: number
 function sourceSignature(source: KiroSource) {
   return signature(source.format === 'sqlite'
     ? [source.path, `${source.path}-wal`]
-    : [source.path, source.metadataPath!]);
+    : filePaths(source.path, source.metadataPath!, source.format));
+}
+
+function childPaths(path: string): string[] {
+  const directory = join(dirname(path), 'sub-executions');
+  try {
+    // Enumerate native files. Transcript ids never authorize filesystem reads.
+    return readdirSync(directory, { withFileTypes: true })
+      .filter(entry => entry.isFile() && /^[a-zA-Z0-9_-]+\.jsonl$/.test(entry.name))
+      .map(entry => join(directory, entry.name)).sort();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+function filePaths(path: string, metadataPath: string, format: 'cli' | 'workspace'): string[] {
+  return format === 'cli' ? [path, metadataPath]
+    : [path, metadataPath, join(dirname(path), 'sub-executions'), ...childPaths(path)];
 }
 
 function readJson(path: string): JsonRecord {
@@ -193,7 +215,7 @@ function discoverAt(root: string, dbPath: string, ctx: DiscoverContext, openData
   const workspaces = entries(sessionsRoot, indexed.some(session => !session.jsonlPath.includes('#kiro:')));
   const addFile = (path: string, metadataPath: string, format: 'cli' | 'workspace') => {
     try {
-      const before = signature([path, metadataPath]);
+      const before = signature(filePaths(path, metadataPath, format));
       const header = readJson(metadataPath);
       const rawId = str(format === 'cli' ? header.session_id : header.id);
       if (rawId === null) throw new Error('Kiro session id is missing');
@@ -216,7 +238,7 @@ function discoverAt(root: string, dbPath: string, ctx: DiscoverContext, openData
       if (format === 'workspace' && header.schemaVersion !== '1.0.0') {
         throw new Error(`Unsupported Kiro workspace schema ${String(header.schemaVersion)}`);
       }
-      if (signature([path, metadataPath]).signature !== before.signature) throw new Error('Kiro metadata changed during discovery');
+      if (signature(filePaths(path, metadataPath, format)).signature !== before.signature) throw new Error('Kiro metadata changed during discovery');
       sources.push({
         format, path, metadataPath, header, rawId,
         cwd: observedCwd(format === 'cli' ? header.cwd : header.workspacePaths?.[0] ?? header.rootPaths?.[0]),
@@ -367,14 +389,84 @@ function cliMessages(source: KiroSource): ProjectedMessage[] {
 }
 
 function workspaceMessages(source: KiroSource): ProjectedMessage[] {
-  return readJsonl(source.path).flatMap(event => {
+  const events = readJsonl(source.path);
+  const out: ProjectedMessage[] = [];
+  const children = new Map<string, ProjectedMessage>();
+  const completions: JsonRecord[] = [];
+  if (str(source.header.parentSessionId)) {
+    out.push({ role: 'system', text: `Forked from Kiro session ${source.header.parentSessionId}`, contentType: 'text',
+      timestamp: time(source.header.createdAt), meta: true,
+      raw: { parentSessionId: source.header.parentSessionId, forkedAtMessageId: source.header.forkedAtMessageId, createdReason: source.header.createdReason } });
+  }
+  const append = (event: JsonRecord, agent?: string) => {
     const payload = object(event.payload);
-    if (!['user', 'assistant', 'agent_note', 'session_start'].includes(payload.type)) return [];
-    const role = payload.type === 'user' ? 'user' : payload.type === 'assistant' ? 'assistant' : 'system';
-    const text = str(payload.content);
-    return [{ role, text, contentType: text === null ? 'unknown' : 'text', timestamp: time(event.timestamp),
-      model: str(source.header.modelId), meta: role === 'system', raw: event }];
-  });
+    const timestamp = time(event.timestamp);
+    const base = { timestamp, model: str(source.header.modelId), raw: event, agent,
+      execution: str(payload.executionId) ?? undefined };
+    if (['user', 'assistant', 'agent_note', 'session_start'].includes(payload.type)) {
+      const role = payload.type === 'user' ? 'user' : payload.type === 'assistant' ? 'assistant' : 'system';
+      const text = str(payload.content);
+      out.push({ ...base, role, text, contentType: payload.operationType === 'Reasoning' ? 'thinking' : text === null ? 'unknown' : 'text',
+        model: str(payload.reasoningModelId) ?? base.model, meta: role === 'system', summary: ['Summary', 'PrintSummary'].includes(payload.operationType) });
+    } else if (payload.type === 'tool_call' && str(payload.toolCallId) && str(payload.toolName)) {
+      out.push({ ...base, role: 'assistant', text: null, contentType: 'tool_use',
+        call: { id: payload.toolCallId, name: payload.toolName, input: payload.args } });
+    } else if (payload.type === 'tool_result' && str(payload.toolCallId)) {
+      const text = resultText(payload.content);
+      out.push({ ...base, role: 'user', text: text || null, contentType: 'tool_result',
+        result: { id: payload.toolCallId, content: text, error: payload.success === false } });
+    } else if (payload.type === 'sub_agent_start' && str(payload.subSessionId)) {
+      const message: ProjectedMessage = { ...base, role: 'system', text: str(payload.prompt) ?? str(payload.explanation), contentType: 'text', meta: true,
+        execution: str(payload.parentExecutionId) ?? undefined,
+        subagent: { id: payload.subSessionId, name: str(payload.subAgentName), description: str(payload.prompt) ?? str(payload.explanation), duration: null, parentCall: null } };
+      out.push(message);
+      children.set(payload.subSessionId, message);
+    } else if (payload.type === 'sub_agent_complete') {
+      completions.push(event);
+    } else if (payload.type === 'usage_summary') {
+      // These summaries report credits, not tokens. Retain the native record
+      // for raw lookup without fabricating token totals or duplicating text.
+      out.push({ ...base, role: 'system', text: null, contentType: 'unknown', meta: true });
+    } else if (['tool_call', 'tool_result'].includes(payload.type)) {
+      out.push({ ...base, role: payload.type === 'tool_call' ? 'assistant' : 'user', text: null, contentType: 'unknown' });
+    }
+  };
+  for (const event of events) append(event);
+  for (const path of childPaths(source.path)) {
+    const nativeId = basename(path, '.jsonl');
+    const start = children.get(nativeId);
+    // Interrupted executions may have persisted a child file before its start
+    // marker. Keep those messages and attest only the id in the native filename.
+    if (start === undefined) {
+      const message: ProjectedMessage = { role: 'system', text: null, contentType: 'unknown', timestamp: null, meta: true,
+        subagent: { id: nativeId, name: null, description: null, duration: null, parentCall: null }, raw: { subSessionId: nativeId } };
+      out.push(message);
+      children.set(nativeId, message);
+    }
+    for (const event of readJsonl(path)) append(event, nativeId);
+  }
+  for (const event of completions) {
+    const payload = object(event.payload);
+    const child = children.get(payload.subSessionId);
+    if (payload.type === 'sub_agent_complete' && child !== undefined) {
+      const end = time(event.timestamp);
+      if (end !== null && child.timestamp !== null) child.subagent!.duration = Math.max(0, Date.parse(end) - Date.parse(child.timestamp));
+      out.push({ role: 'assistant', text: str(payload.response), contentType: str(payload.response) === null ? 'unknown' : 'text',
+        timestamp: end, model: str(source.header.modelId), agent: payload.subSessionId, raw: event });
+    }
+  }
+  for (const child of children.values()) {
+    // Native V3 starts the child before emitting its orchestration tool call.
+    // Match the saved prompt and role within the same execution; ambiguous
+    // matches stay unlinked rather than assigning another delegation's tool.
+    const candidates = out.flatMap((message, index) => {
+      if (message.agent !== child.agent || message.execution !== child.execution || message.call?.name !== 'orchestrate_subagent') return [];
+      const stages = object(message.call.input).stages;
+      return Array.isArray(stages) && stages.some(stage => object(stage).prompt_template === child.subagent!.description && object(stage).role === child.subagent!.name) ? [index] : [];
+    });
+    if (candidates.length === 1) child.subagent!.parentCall = candidates[0]!;
+  }
+  return out;
 }
 
 function sqliteMessages(source: KiroSource, openDatabase: KiroDatabaseOpener): ProjectedMessage[] {
@@ -440,26 +532,36 @@ function project(source: KiroSource, openDatabase: KiroDatabaseOpener): Projecte
 function recordsFor(source: KiroSource, sessionId: string, messages: ProjectedMessage[]): TranscriptRecord[] {
   const records: TranscriptRecord[] = [];
   const calls = new Map<string, string>();
-  let previous: string | null = null;
+  const previous = new Map<string, string>();
+  const uuidAt = (index: number) => `${sessionId}:message:${String(index).padStart(6, '0')}`;
   for (const [index, message] of messages.entries()) {
-    const uuid = `${sessionId}:message:${String(index).padStart(6, '0')}`;
-    records.push({ kind: 'message', uuid, session_id: sessionId, type: message.role, parent_uuid: previous,
+    const uuid = uuidAt(index);
+    const scope = message.agent ?? '';
+    if (message.summary && message.text !== null) {
+      records.push({ kind: 'summary', id: `${uuid}:summary`, session_id: sessionId,
+        timestamp: message.timestamp, source: 'kiro:compaction', content: trunc(message.text), visibility: 'visible' });
+      continue;
+    }
+    records.push({ kind: 'message', uuid, session_id: sessionId, type: message.role, parent_uuid: previous.get(scope) ?? null,
       timestamp: message.timestamp, role: message.role, text: message.text === null ? null : trunc(message.text),
       content_type: message.contentType, is_meta: message.meta ? 1 : 0, visibility: 'visible', model: message.model ?? null,
-      is_sidechain: 0, agent_id: null, input_tokens: message.input ?? null, output_tokens: message.output ?? null,
+      is_sidechain: message.agent ? 1 : 0, agent_id: message.agent ? `${sessionId}:subagent:${message.agent}` : null, input_tokens: message.input ?? null, output_tokens: message.output ?? null,
       cwd: source.cwd, skill: null, source: name } satisfies MessageRecord);
-    previous = uuid;
+    previous.set(scope, uuid);
+    if (message.subagent !== undefined) records.push({ kind: 'subagent', agent_id: `${sessionId}:subagent:${message.subagent.id}`, session_id: sessionId,
+      parent_tool_use_id: message.subagent.parentCall === null ? null : `${uuidAt(message.subagent.parentCall)}:tool`,
+      agent_type: message.subagent.name, description: message.subagent.description, duration_ms: message.subagent.duration });
     if (message.call !== undefined) {
       // Occurrence-scoped ids preserve retries reusing the same native tool id.
       const id = `${uuid}:tool`;
-      calls.set(message.call.id, id);
+      calls.set(`${scope}\0${message.call.id}`, id);
       records.push({ kind: 'tool_call', id, message_uuid: uuid, session_id: sessionId, name: message.call.name,
         presentation: 'default', input_json: truncJson(message.call.input ?? {}) ?? '{}', file_path: null });
     }
     if (message.result !== undefined) {
-      records.push({ kind: 'tool_result', tool_use_id: calls.get(message.result.id) ?? `${uuid}:orphan-tool`, message_uuid: uuid,
+      records.push({ kind: 'tool_result', tool_use_id: calls.get(`${scope}\0${message.result.id}`) ?? `${uuid}:orphan-tool`, message_uuid: uuid,
         session_id: sessionId, content: trunc(message.result.content), file_path: null, is_error: message.result.error ? 1 : 0 });
-      calls.delete(message.result.id);
+      calls.delete(`${scope}\0${message.result.id}`);
     }
   }
   const header = source.header;
@@ -468,7 +570,7 @@ function recordsFor(source: KiroSource, sessionId: string, messages: ProjectedMe
     project: projectSlugFromPath(source.cwd), started_at: time(header.created_at ?? header.createdAt),
     ended_at: time(header.updated_at ?? header.lastModifiedAt) ?? messages.at(-1)?.timestamp ?? null,
     git_branch: null, version: source.format === 'workspace' ? `workspace-${header.schemaVersion}` : source.format === 'cli' ? 'cli-v1' : 'conversations-v2',
-    message_count: messages.length, countMode: 'total', jsonl_path: sourcePath(source), source: name });
+    message_count: messages.filter(message => message.agent === undefined && !(message.summary && message.text !== null)).length, countMode: 'total', jsonl_path: sourcePath(source), source: name });
   return records;
 }
 

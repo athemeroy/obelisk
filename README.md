@@ -47,19 +47,23 @@ ZCode stores its transcripts in one SQLite database (`~/.zcode/cli/db/db.sqlite`
 Kiro reads flat CLI `sessions/cli/<id>.json` metadata with its `.jsonl` transcript
 (JSON event version `v1`),
 workspace `sessions/<hash>/sess_*/session.json` with `messages.jsonl` (schema
-1.0.0), and classic SQLite `conversations_v2` rows. Messages, thinking, CLI and
-classic tool calls/results, and reported token usage use the shared tables.
+1.0.0), and classic SQLite `conversations_v2` rows. These layouts were exercised
+with the V2, V3 and V1 engines respectively in Kiro CLI 2.27.1. Messages,
+thinking, tool calls/results, and reported token usage use the shared tables.
 The `.history` files are line-editor input history, so they are not indexed.
 Subagent-origin CLI sessions without a parent id remain searchable standalone
 sessions with an explicit metadata card; Obelisk does not invent parent links.
-Workspace credit usage is not a token count. Workspace tool event layouts and
-cloud sessions are not covered by this adapter.
+V3 `sub-executions/*.jsonl` transcripts use the shared subagent tables. Native
+delegation prompts and roles link them to an unambiguous orchestration call.
+V3 compaction summaries use the shared summary table; retained physical history
+remains searchable. Tangents appear as separate sessions with a metadata card
+identifying their native parent. Workspace credit usage is not a token count.
+Cloud sessions are not covered by this adapter.
 The JSON event version `v1` and workspace schema `1.0.0` describe storage formats.
 Kiro's V1, V2 and V3 agent engines have separate version labels, and
 [V3 session data is incompatible with V2](https://kiro.dev/docs/cli/v3/).
-These captured stores were tested; complete V1/V2/V3 engine compatibility was
-not established. Workspace compaction, tangent and parent-child semantics are
-also not validated.
+Sanitized captures and separate native engine sessions verify these local
+formats, including V3 tools, child agents, compaction and tangents.
 
 Kiro defaults to `~/.kiro` plus the platform store at
 `~/Library/Application Support/kiro-cli/data.sqlite3` on macOS,

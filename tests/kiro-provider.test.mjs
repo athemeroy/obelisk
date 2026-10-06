@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createKiroProvider, defaultKiroDatabasePath, kiroSessionId } from '../packages/core/src/providers/kiro.ts';
@@ -13,6 +13,7 @@ import { runWriteTransaction } from '../packages/core/src/tx.ts';
 import { assembleSessionDetail } from '../packages/core/src/session-detail.ts';
 import { createQueryApi } from '../packages/core/src/query.ts';
 import { createProviderRegistry } from '../packages/core/src/providers/registry.ts';
+import { createProviderIndexPlan, indexProviderPlan } from '../packages/core/src/provider-indexing.ts';
 import { makeTempDir } from './temp-dirs.mjs';
 
 const fixture = name => new URL(`./fixtures/kiro/${name}`, import.meta.url);
@@ -67,6 +68,119 @@ function setup() {
   const root = makeTempDir('obelisk-kiro-');
   return { root, provider: createKiroProvider({ rootDir: root, openDatabase }) };
 }
+
+function seedV3(root) {
+  const directory = join(root, 'sessions', 'workspace-hash', 'sess_v3');
+  cpSync(new URL('./fixtures/kiro/v3/', import.meta.url), directory, { recursive: true });
+  return directory;
+}
+
+test('Kiro V3 tools, reasoning and child transcripts are searchable and survive the canonical SQLite round-trip', () => {
+  const { root, provider } = setup();
+  seedV3(root);
+  const [unit] = discover(provider);
+  const { records, cursor } = drain(provider.parse(unit, null));
+  const calls = records.filter(row => row.kind === 'tool_call');
+  const results = records.filter(row => row.kind === 'tool_result');
+  const messages = records.filter(row => row.kind === 'message');
+  assert.equal(calls.length, 5);
+  assert.equal(results.length, 5);
+  assert.ok(results.every(result => calls.some(call => call.id === result.tool_use_id)));
+  assert.ok(messages.some(row => row.content_type === 'thinking'));
+  const child = records.find(row => row.kind === 'subagent');
+  assert.equal(child.agent_type, 'general-task-execution');
+  assert.ok(child.duration_ms > 0);
+  assert.equal(calls.find(call => call.id === child.parent_tool_use_id).name, 'orchestrate_subagent');
+  assert.equal(messages.filter(row => row.agent_id === child.agent_id).length, 8);
+  assert.ok(messages.every(row => row.input_tokens === null && row.output_tokens === null), 'credit usage must not become tokens');
+  const db = new DatabaseSync(':memory:'); db.exec(SCHEMA);
+  persist(db, unit, provider.parse(unit, null));
+  const persisted = assembleSessionDetail({
+    session: db.prepare('SELECT * FROM sessions').get(),
+    messages: db.prepare('SELECT * FROM messages ORDER BY timestamp, uuid').all(),
+    toolCalls: db.prepare('SELECT * FROM tool_calls ORDER BY rowid').all(),
+    toolResults: db.prepare('SELECT * FROM tool_results ORDER BY rowid').all(),
+    subagents: db.prepare('SELECT * FROM subagents ORDER BY rowid').all(),
+  });
+  assert.deepEqual(persisted, assembleSessionDetail(records));
+  const api = createQueryApi(db, { providerRegistry: createProviderRegistry([provider]) });
+  const target = messages.find(row => row.agent_id === child.agent_id && row.text === 'Example child response');
+  assert.ok(api.search('Example child response', { source: 'kiro' }).some(row => row.message.uuid === target.uuid));
+  assert.equal(provider.raw({ source: 'kiro', session: records.find(row => row.kind === 'session'), messageUuid: target.uuid, agentId: child.agent_id, cursor }).messageText, target.text);
+  db.close();
+});
+
+test('Kiro V3 child file changes and deletion refresh the parent snapshot without a parent-file change', () => {
+  const { root, provider } = setup();
+  const directory = seedV3(root);
+  const [unit] = discover(provider);
+  const first = drain(provider.parse(unit, null));
+  const child = join(directory, 'sub-executions', readdirSync(join(directory, 'sub-executions'))[0]);
+  const indexed = [{ sessionId: unit.sessionId, jsonlPath: join(directory, 'messages.jsonl') }];
+  const context = { indexed, cursors: new Map([[unit.key, first.cursor]]) };
+  writeFileSync(child, readFileSync(child, 'utf8').replace('Example child response', 'Updated child response'));
+  const [changed] = discover(provider, context);
+  assert.ok([...provider.parse(changed, first.cursor)].some(row => row.kind === 'message' && row.text === 'Updated child response'));
+  assert.throws(() => [...provider.parse(unit, first.cursor)], /changed after discovery/);
+  rmSync(child);
+  const [removed] = discover(provider, context);
+  const remaining = [...provider.parse(removed, first.cursor)];
+  assert.equal(remaining.filter(row => row.kind === 'message' && row.agent_id !== null).length, 1,
+    'the final response saved in the parent survives removal of the child file');
+  assert.ok(!remaining.some(row => row.kind === 'message' && row.text === 'Updated child response'));
+});
+
+test('Kiro V3 compaction summaries and tangent sessions preserve native evidence without losing parent history', () => {
+  const { root, provider } = setup();
+  const directory = seedV3(root);
+  const transcript = join(directory, 'messages.jsonl');
+  writeFileSync(transcript, readFileSync(transcript, 'utf8') + readFileSync(fixture('v3/compaction.jsonl'), 'utf8'));
+  cpSync(fixture('v3/tangent'), join(root, 'sessions', 'workspace-hash', 'sess_tangent'), { recursive: true });
+  const units = discover(provider);
+  assert.equal(units.length, 2);
+  const records = units.flatMap(unit => [...provider.parse(unit, null)]);
+  const summary = records.find(row => row.kind === 'summary');
+  assert.equal(summary.content, 'Example compaction summary');
+  assert.equal(summary.source, 'kiro:compaction');
+  assert.ok(records.some(row => row.kind === 'message' && row.text === 'Example prompt'));
+  assert.ok(records.some(row => row.kind === 'message' && row.text === 'Example tangent response'));
+  assert.ok(records.some(row => row.kind === 'message' && row.is_meta && row.text?.startsWith('Forked from Kiro session')));
+  const db = new DatabaseSync(':memory:'); db.exec(SCHEMA);
+  for (const unit of units) persist(db, unit, provider.parse(unit, null));
+  const main = records.find(row => row.kind === 'session' && row.title === 'Example session');
+  assert.deepEqual(assembleSessionDetail({
+    session: db.prepare('SELECT * FROM sessions WHERE id = ?').get(main.id),
+    messages: db.prepare('SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp, uuid').all(main.id),
+    toolCalls: db.prepare('SELECT * FROM tool_calls WHERE session_id = ? ORDER BY rowid').all(main.id),
+    toolResults: db.prepare('SELECT * FROM tool_results WHERE session_id = ? ORDER BY rowid').all(main.id),
+    subagents: db.prepare('SELECT * FROM subagents WHERE session_id = ? ORDER BY rowid').all(main.id),
+    summaries: db.prepare('SELECT * FROM summaries WHERE session_id = ? ORDER BY rowid').all(main.id),
+  }), assembleSessionDetail(records.filter(row => row.session_id === main.id || row.id === main.id)));
+  db.close();
+});
+
+test('Kiro indexes previously omitted V3 events when upgrading an unchanged index from the old canonical marker', () => {
+  const { root, provider } = setup(); seedV3(root);
+  const [unit] = discover(provider);
+  const first = drain(provider.parse(unit, null));
+  const db = new DatabaseSync(':memory:'); db.exec(SCHEMA);
+  // Recreate the original provider's cursor and text-only persisted projection.
+  persist(db, unit, (function* () {
+    yield* first.records.filter(row => row.kind === 'session' || (row.kind === 'message' && row.agent_id === null && row.content_type === 'text'));
+    return first.cursor;
+  })());
+  db.prepare('INSERT INTO index_state (jsonl_path, mtime, lines_processed, cursor) VALUES (?, 0, 0, ?)')
+    .run('__kiro_canonical_transcript_v1__', '0:0:previous-format');
+  const registry = createProviderRegistry([provider]);
+  const plan = createProviderIndexPlan(db, registry);
+  assert.equal(plan.pendingMarkers.get('kiro'), '__kiro_canonical_transcript_v2__');
+  assert.ok(plan.items.some(item => item.unit.key === unit.key && item.cursor === null));
+  indexProviderPlan({ db, plan, runTransaction: (_label, work) => runWriteTransaction(db, work), onError: error => { throw error; } });
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM tool_calls').get().n, 5);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM subagents').get().n, 1);
+  assert.equal(createProviderIndexPlan(db, registry).items.length, 0);
+  db.close();
+});
 
 for (const format of ['cli', 'workspace', 'sqlite']) {
   test(`Kiro discovers ${format} sessions and preserves canonical detail through SQLite`, () => {

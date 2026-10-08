@@ -110,6 +110,7 @@ function getRuntimePaths(persisted = loadPersistedSettings()) {
     openKiroDatabase: sourcePath => new Database(sourcePath, {
       readonly: true,
       fileMustExist: true,
+      timeout: 500,
     }),
   });
   const providerRoots = runtime.roots;

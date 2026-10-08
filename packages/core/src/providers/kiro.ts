@@ -18,7 +18,7 @@ import type {
 } from './types.ts';
 
 export const name = 'kiro';
-export const KIRO_CANONICAL_TRANSCRIPT_MARKER = '__kiro_canonical_transcript_v2__';
+export const KIRO_CANONICAL_TRANSCRIPT_MARKER = '__kiro_canonical_transcript_v3__';
 export type KiroDatabaseOpener = (path: string) => SqliteDb;
 type JsonRecord = Record<string, any>;
 type Format = 'cli' | 'workspace' | 'sqlite';
@@ -381,7 +381,11 @@ function workspaceMessages(source: KiroSource): ProjectedMessage[] {
     const timestamp = time(event.timestamp);
     const base = { timestamp, model: str(source.header.modelId), raw: event, agent,
       execution: str(payload.executionId) ?? undefined };
-    if (['user', 'assistant', 'agent_note', 'session_start', 'usage_summary'].includes(payload.type)) {
+    if (payload.type === 'usage_summary') {
+      out.push({ ...base, role: 'system', text: `Kiro reported usage: ${JSON.stringify(payload)}`, meta: true });
+    } else if (payload.type === 'session_metadata' && payload.value?.usagePercentage !== undefined) {
+      out.push({ ...base, role: 'system', text: `Kiro reported usage percentage: ${JSON.stringify(payload)}`, meta: true });
+    } else if (['user', 'assistant', 'agent_note', 'session_start'].includes(payload.type)) {
       const role = payload.type === 'user' ? 'user' : payload.type === 'assistant' ? 'assistant' : 'system';
       const text = str(payload.content);
       out.push({ ...base, role, text, contentType: payload.operationType === 'Reasoning' ? 'thinking' : undefined,

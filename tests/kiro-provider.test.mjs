@@ -132,25 +132,26 @@ test('Kiro V3 compaction summaries and tangent sessions preserve native evidence
   db.close();
 });
 
-test('Kiro indexes previously omitted V3 events when upgrading an unchanged index from the old canonical marker', () => {
+test('Kiro indexes reported usage and V3 events when upgrading an unchanged index from the old canonical marker', () => {
   const { root, provider } = setup(); seedV3(root);
   const [unit] = discover(provider);
   const first = drain(provider.parse(unit, null));
   const db = indexDb();
   // Recreate the original provider's cursor and text-only persisted projection.
   persist(db, unit, (function* () {
-    yield* first.records.filter(row => row.kind === 'session' || (row.kind === 'message' && row.agent_id === null && row.content_type === 'text'));
+    yield* first.records.filter(row => row.kind === 'session' || (row.kind === 'message' && row.agent_id === null && row.content_type === 'text' && !row.text?.startsWith('Kiro ')));
     return first.cursor;
   })());
   db.prepare('INSERT INTO index_state (jsonl_path, mtime, lines_processed, cursor) VALUES (?, 0, 0, ?)')
-    .run('__kiro_canonical_transcript_v1__', '0:0:previous-format');
+    .run('__kiro_canonical_transcript_v2__', '0:0:previous-format');
   const registry = createProviderRegistry([provider]);
   const plan = createProviderIndexPlan(db, registry);
-  assert.equal(plan.pendingMarkers.get('kiro'), '__kiro_canonical_transcript_v2__');
+  assert.equal(plan.pendingMarkers.get('kiro'), '__kiro_canonical_transcript_v3__');
   assert.ok(plan.items.some(item => item.unit.key === unit.key && item.cursor === null));
   indexProviderPlan({ db, plan, runTransaction: (_label, work) => runWriteTransaction(db, work), onError: error => { throw error; } });
   assert.equal(db.prepare('SELECT COUNT(*) n FROM tool_calls').get().n, 5);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM subagents').get().n, 1);
+  assert.ok(db.prepare("SELECT text FROM messages WHERE text LIKE 'Kiro reported usage:%'").all().some(row => row.text.includes('0.4241799948590381')));
   assert.equal(createProviderIndexPlan(db, registry).items.length, 0);
   db.close();
 });
@@ -181,6 +182,8 @@ for (const format of ['cli', 'workspace', 'sqlite', 'v3']) {
       assert.ok(child.duration_ms > 0);
       assert.equal(calls.find(call => call.id === child.parent_tool_use_id).name, 'orchestrate_subagent');
       assert.equal(messages.filter(row => row.agent_id === child.agent_id).length, 8);
+      assert.ok(messages.some(row => row.is_meta === 1 && row.text?.startsWith('Kiro reported usage:') && row.text.includes('0.4241799948590381') && row.text.includes('credit')));
+      assert.ok(messages.some(row => row.is_meta === 1 && row.text?.startsWith('Kiro reported usage percentage:') && row.text.includes('2.9042000770568848')));
       assert.ok(messages.every(row => row.input_tokens === null && row.output_tokens === null), 'credit usage must not become tokens');
     }
     assert.ok(messages.some(row => row.role === 'user' && row.text === (format === 'v3' ? 'Example prompt' : 'Example content')));
@@ -202,6 +205,7 @@ for (const format of ['cli', 'workspace', 'sqlite', 'v3']) {
     const api = createQueryApi(db, { providerRegistry: createProviderRegistry([provider]) });
     assert.equal(api.sessions({ source: 'kiro' }).length, 1);
     assert.ok(api.search('Example', { source: 'kiro' }).length > 0);
+    if (format === 'v3') assert.ok(api.search('credit', { source: 'kiro', includeMeta: true }).some(hit => hit.message.text.includes('0.4241799948590381')));
     const sourceSession = records.find(row => row.kind === 'session');
     const target = messages.find(row => row.text === (format === 'v3' ? 'Example child response' : 'Example content'));
     if (format === 'v3') assert.ok(api.search('Example child response', { source: 'kiro' }).some(row => row.message.uuid === target.uuid));

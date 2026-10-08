@@ -148,7 +148,7 @@ npm run dev
 | **Messages** | 完整文本、模型、token 用量、父子链 | 全部 |
 | **Tool calls** | 工具名、输入、文件路径 | 全部 |
 | **Subagents** | agent 类型、描述、完整对话 | Claude Code、Codex、DeepSeek Harness、Hermes Agent、Kiro V3、Kimi Code、ZCode |
-| **Summaries** | provider 自己产生的会话摘要 | Kimi Code |
+| **Summaries** | provider 自己产生的会话摘要 | Kiro V3、Kimi Code |
 | **Workflows** | workflow 脚本、结果、每个 agent 的记录 | Claude Code |
 | **Memories** | 结论及其来源会话 | 注册的 markdown 文件 |
 

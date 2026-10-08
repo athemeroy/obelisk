@@ -165,7 +165,7 @@ where the source tool has the concept:
 | **Messages** | Full text, model, token usage, parent chain | all providers |
 | **Tool calls** | Tool name, input, file paths | all providers |
 | **Subagents** | Agent type, description, full conversation | Claude Code, Codex, DeepSeek Harness, Hermes Agent, Kiro V3, Kimi Code, ZCode |
-| **Summaries** | Session summaries emitted by the provider | Kimi Code |
+| **Summaries** | Session summaries emitted by the provider | Kiro V3, Kimi Code |
 | **Workflows** | Workflow script, result, and per-agent transcripts | Claude Code |
 | **Memories** | Conclusions linked to source sessions | registered markdown files |
 

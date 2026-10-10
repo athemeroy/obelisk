@@ -230,6 +230,34 @@ test('strict candidate resolves when the matching session invoked the CLI', () =
   db.close();
 });
 
+test('strict content invocation seeks recent messages and deduplicates sessions', () => {
+  const db = invokingDb();
+  const script = "return search('strict content timestamp regression', { limit: 3 });";
+  const insert = db.prepare('INSERT INTO messages (uuid, session_id, type, role, text, timestamp) VALUES (?,?,?,?,?,?)');
+  for (let i = 0; i < 2; i++) {
+    insert.run(`msg-content-${i}`, 'sid-self', 'user', 'user', `${script}\nobelisk --query "$qfile"`, '2026-08-11T10:00:03Z');
+  }
+  // The same content and invocation in an old session must remain ineligible.
+  insert.run('msg-content-old', 'sid-history', 'user', 'user', `${script}\nobelisk --query "$qfile"`, '2026-08-01T10:00:03Z');
+  const prepare = db.prepare.bind(db);
+  const plans = [];
+  db.prepare = (sql) => {
+    // Inspect the actual resolver statement, rather than a copy of its SQL.
+    if (/SELECT\s+(?:DISTINCT\s+)?session_id\s+FROM messages\s+WHERE timestamp/.test(sql)) {
+      plans.push(prepare(`EXPLAIN QUERY PLAN ${sql}`).all('2026-08-11T09:45:10.000Z', '%obelisk --%', '%obelisk.js --%'));
+    }
+    return prepare(sql);
+  };
+  try {
+    assert.equal(resolveInvokingSessionId(db, [{ value: script, strict: true }], { nowMs: FIXTURE_NOW_MS }), 'sid-self');
+    assert.equal(plans.length, 1);
+    assert.ok(plans[0].some(row => /SEARCH messages USING INDEX idx_messages_time/.test(row.detail)), JSON.stringify(plans[0]));
+    assert.ok(!plans[0].some(row => /SCAN messages/.test(row.detail)), JSON.stringify(plans[0]));
+  } finally {
+    db.close();
+  }
+});
+
 test('strict candidate rejects a matching session that never invoked the CLI', () => {
   // A stranger who merely wrote or quoted the same content has no CLI
   // invocation record: honest null instead of mis-marking their session.

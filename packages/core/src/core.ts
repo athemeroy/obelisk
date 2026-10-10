@@ -268,8 +268,10 @@ function recentCliInvokerSessions(
     }
   }
   if (indexedTables.has('messages')) {
+    // The Set below already deduplicates sessions. SQL DISTINCT can make
+    // SQLite scan idx_messages_session instead of seeking recent timestamps.
     const rows = db.prepare(`
-      SELECT DISTINCT session_id FROM messages
+      SELECT session_id FROM messages
       WHERE timestamp >= ? AND (text LIKE ? OR text LIKE ?)
     `).all(cutoff, ...patterns);
     for (const row of rows) {

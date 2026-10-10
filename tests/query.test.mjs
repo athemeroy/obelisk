@@ -73,6 +73,32 @@ function searchDb() {
   return db;
 }
 
+test('search, fileHistory, and thread reject ignored filters and bounds', () => {
+  const db = searchDb();
+  const api = createQueryApi(db);
+  try {
+    for (const [helper, call, unsupported] of [
+      ['search', opts => api.search('needle', opts), ['sessions', 'branch', 'limt']],
+      ['fileHistory', opts => api.fileHistory('/tmp/file.ts', opts), ['sessionId', 'sessions', 'project', 'branch', 'limt']],
+      ['thread', opts => api.thread('sid-search', opts), ['limit', 'after', 'before', 'limt']],
+    ]) {
+      for (const key of unsupported) {
+        assert.throws(() => call({ [key]: key === 'sessions' ? ['sid-search'] : 'ignored' }), error => {
+          assert.ok(error instanceof TypeError);
+          assert.ok(error.message.startsWith(`${helper}() does not support option "${key}"; supported options:`));
+          return true;
+        });
+      }
+    }
+    assert.equal(api.search('needle', { sessionId: 'sid-search', limit: 1, fallback: 'or' }).length, 1);
+    assert.equal(api.search('needle', { sessionId: 'absent' }).length, 0);
+    assert.equal(api.thread('sid-search', { includeMeta: true, includeInactive: true }).length, 6);
+    assert.equal(api.thread('sid-search', null).length, 2);
+  } finally {
+    db.close();
+  }
+});
+
 test('list helpers reject negative limits instead of returning unbounded results', () => {
   const db = memoryDb();
   const api = createQueryApi(db);

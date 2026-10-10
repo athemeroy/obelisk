@@ -103,6 +103,9 @@ index writes. It requires an already-initialized index (run any query or
 
 Full-text search across all indexed message text using FTS5.
 
+Unsupported option keys throw a `search()` error. Only the options below are
+accepted; `sessions` and `branch` are not implemented.
+
 | Param | Type | Description |
 | --- | --- | --- |
 | `text` | `string` | FTS5 query string |
@@ -425,6 +428,9 @@ ancestors are omitted.
 
 Messages in a session ordered by timestamp.
 
+Unsupported option keys throw a `thread()` error, including `limit`, `after`,
+and `before`.
+
 | Param | Type | Description |
 | --- | --- | --- |
 | `sessionId` | `string` | Session ID |
@@ -518,6 +524,9 @@ Returns:
 
 Tool calls that touched one file, ordered oldest first. Includes `Read` rows as
 well as `Edit`/`Write`.
+
+Unsupported option keys throw a `fileHistory()` error. Only the options below
+are accepted; session and project filters are not implemented.
 
 | Param | Type | Description |
 | --- | --- | --- |

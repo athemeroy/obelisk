@@ -91,6 +91,12 @@ function assertNonNegativeLimit(value: number, label: string): void {
   if (value < 0) throw new RangeError(`${label} must be non-negative (got ${value})`);
 }
 
+function assertSupportedOptions(opts: QueryOptions | null | undefined, helper: string, keys: readonly string[]): void {
+  for (const key of Object.keys(opts ?? {})) {
+    if (!keys.includes(key)) throw new TypeError(`${helper}() does not support option "${key}"; supported options: ${keys.join(', ')}`);
+  }
+}
+
 function buildWhere(opts: QueryOptions, aliases: ColumnAliases) {
   const clauses: string[] = [];
   const params: any[] = [];
@@ -314,6 +320,7 @@ function createQueryApi(
   };
 
   const search = (text: string, opts: QueryOptions = {}) => {
+    assertSupportedOptions(opts, 'search', ['limit', 'sessionId', 'project', 'after', 'before', 'cwd', 'source', 'includeMeta', 'includeInactive', 'fallback']);
     const {
       limit = 20,
       sessionId,
@@ -610,6 +617,7 @@ function createQueryApi(
   };
 
   const thread = (sid: string, opts: QueryOptions = {}) => {
+    assertSupportedOptions(opts, 'thread', ['includeMeta', 'includeInactive']);
     const includeMeta = opts?.includeMeta === true;
     const includeInactive = opts?.includeInactive === true;
     const metaClause = includeMeta ? '' : 'AND COALESCE(is_meta,0)=0';
@@ -666,6 +674,7 @@ function createQueryApi(
   };
 
   const fileHistory = (fp: string, opts: QueryOptions = {}) => {
+    assertSupportedOptions(opts, 'fileHistory', ['limit', 'after', 'before', 'source', 'includeInactive']);
     const { limit = 200, after, before, source, includeInactive = false } = opts;
     assertNonNegativeLimit(limit, 'fileHistory() limit');
     let where = `tc.file_path=? AND ${visibilitySql('m', includeInactive)}`;
